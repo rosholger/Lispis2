@@ -8,6 +8,10 @@
 #include <map>
 #include <string>
 
+void *alloc(VM *vm, size_t size) {
+    return malloc(size);
+}
+
 using std::vector;
 using std::map;
 
@@ -164,22 +168,6 @@ Token nextToken(LexState *state) {
     return tok;
 }
 
-// TODO: replace this rubbish with the internal list repr.
-// bc this would make macro implementation far easier.
-// But mah lineinfo! We can hash the pointers to nodes! (as long as
-// we dont run GC while doing this stuff).
-
-enum ParseTreeType {
-    P_LIST,
-    P_ARGLIST,
-    P_OBJECT_LITERAL,
-    P_SYMBOL,
-    P_BOOLEAN,
-    P_DOUBLE,
-    P_STRING,
-    P_ERROR
-};
-
 template <typename T>
 void add(DynamicArray<T> *a, T v) {
     a->v.push_back(v);
@@ -202,90 +190,43 @@ size_t size(DynamicArray<T> *a) {
     return a->v.size();
 }
 
-struct ParseTree {
-    ParseTreeType type;
-    DynamicArray<ParseTree> children; // move into union once we have out own
-    union {
-        double d;
-        bool b;
-        char *str;
-        struct {
-            char *symstr;
-            int symid;
-        };
-    };
-};
-
-#if 0
-
-struct ScratchAllocator {
-    char *mem = 0;
-    size_t top = 0;
-    size_t size = 0;
-};
-
-void *allocSize(ScratchAllocator *a, size_t size) {
-    assert(a->top+size < a->size);
-    void *ret = a->mem+a->top;
-    a->top += size;
-    return ret;
-}
-
-#define alloc(a, t) ((t *)(allocSize(a, sizeof(t))))
-
-void clear(ScratchAllocator *a) {
-    a->top = 0;
-}
-
-void freeScratchAllocator(ScratchAllocator *a) {
-    free(a->mem);
-    a->top = 0;
-    a->size = 0;
-}
-
-#endif
-
 struct ParseState {
     LexState lexer;
-    ParseTree root;
+    Value root;
 };
 
 ParseState initParseState(char *prog) {
     ParseState ret{};
     ret.lexer.prog = prog;
-    ret.root.type = P_LIST;
+    ret.root.type = V_CONS_PAIR;
     return ret;
 }
 
 
-void parseList(ParseState *ps, ParseTree *parent) {
+void parseList(VM *vm, ParseState *ps, Value *parent) {
+
+#define nextParent(parent)                                              \
+
+
     Token tok = nextToken(&ps->lexer);
     while (tok.type != T_RIGHT_PAREN && tok.type != T_EOF) {
+        parent->car = (Value *)alloc(vm, sizeof(Value));
         switch (tok.type) {
             case T_DOUBLE: {
-                ParseTree child{};
-                child.type = P_DOUBLE;
-                child.d = tok.d;
-                add(&parent->children, child);
+                parent->car->type = V_DOUBLE;
+                parent->car->doub = tok.d;
             } break;
             case T_BOOLEAN: {
-                ParseTree child{};
-                child.type = P_BOOLEAN;
-                child.b = tok.b;
-                add(&parent->children, child);
+                parent->car->type = V_BOOLEAN;
+                parent->car->boolean = tok.b;
             } break;
             case T_LEFT_PAREN: {
-                ParseTree child{};
-                child.type = P_LIST;
-                parseList(ps, &child);
-                add(&parent->children, child);
+                parent->car->type = V_CONS_PAIR;
+                parseList(vm, ps, parent->car);
             } break;
             case T_SYMBOL: {
-                ParseTree child{};
-                child.type = P_SYMBOL;
-                child.symstr = tok.symstr;
-                child.symid = tok.symid;
-                add(&parent->children, child);
+                parent->car->type = V_SYMBOL;
+                parent->car->symid = tok.symid;
             } break;
             default: {
                 fprintf(stderr, "ERROR: %d not recognized yet\n", tok.type);
@@ -293,39 +234,16 @@ void parseList(ParseState *ps, ParseTree *parent) {
             } break;
         }
         tok = nextToken(&ps->lexer);
+        if (tok.type != T_RIGHT_PAREN && tok.type != T_EOF) {
+            parent->cdr = (Value *)alloc(vm, sizeof(Value));
+            parent = parent->cdr;
+            parent->type = V_CONS_PAIR;
+        }
     }
 }
 
-void parse(ParseState *ps) {
-    parseList(ps, &ps->root);
-}
-
-void printParseTree(ParseTree *tree, char *prog, int indentLevel) {
-    switch (tree->type) {
-        case P_DOUBLE: {
-            printf("%*.s%f\n", indentLevel, "", tree->d);
-        } break;
-        case P_BOOLEAN: {
-            printf("%*.s%s\n", indentLevel, "",
-                   tree->b ? "true" : "false");
-        } break;
-        case P_LIST: {
-            printf("%*.s(\n", indentLevel, "");
-            for (size_t i = 0; i < size(&tree->children); ++i) {
-                ParseTree child = tree->children[i];
-                printParseTree(&child, prog, indentLevel + 2);
-            }
-            printf("%*.s)\n", indentLevel, "");
-        } break;
-        case P_SYMBOL: {
-            printf("%*.s%s %d\n", indentLevel, "", tree->symstr,
-                   tree->symid);
-        } break;
-        default: {
-            fprintf(stderr, "ERROR: %d cant be printed yet\n", tree->type);
-            assert(false);
-        } break;
-    }
+void parse(VM *vm, ParseState *ps) {
+    parseList(vm, ps, &ps->root);
 }
 
 void add(Object *o, int symid, Value v) {
@@ -730,41 +648,41 @@ struct ASTMakeObject : ASTNode {
     }
 };
 
-ASTSymbol symbolToAST(ParseTree *tree) {
-    assert(tree->type == P_SYMBOL);
+ASTSymbol symbolToAST(Value *tree) {
+    assert(tree->type == V_SYMBOL);
     ASTSymbol ret;
-    ret.str = tree->symstr;
+    //ret.str = tree->symstr;
+    ret.str = 0;
     ret.symid = tree->symid;
     return ret;
 }
 
-ASTVariable variableToAST(ParseTree *tree) {
-    assert(tree->type == P_SYMBOL);
+ASTVariable variableToAST(Value *tree) {
+    assert(tree->type == V_SYMBOL);
     ASTVariable ret;
-    ret.symbol.str = tree->symstr;
-    ret.symbol.symid = tree->symid;
+    ret.symbol = symbolToAST(tree);
     return ret;
 }
 
 
-ASTDouble doubleToAST(ParseTree *tree) {
-    assert(tree->type == P_DOUBLE);
+ASTDouble doubleToAST(Value *tree) {
+    assert(tree->type == V_DOUBLE);
     ASTDouble ret;
-    ret.value = tree->d;
+    ret.value = tree->doub;
     return ret;
 }
 
-ASTBoolean booleanToAST(ParseTree *tree) {
-    assert(tree->type == P_BOOLEAN);
+ASTBoolean booleanToAST(Value *tree) {
+    assert(tree->type == V_BOOLEAN);
     ASTBoolean ret;
-    ret.value = tree->b;
+    ret.value = tree->boolean;
     return ret;
 }
 
-ASTNode *exprToAST(ParseTree *tree);
+ASTNode *exprToAST(Value *tree);
 
-ASTCall callToAST(ParseTree *tree) {
-    assert(tree->type == P_LIST);
+ASTCall callToAST(Value *tree) {
+    assert(tree->type == P_CONS_PAIR);
     ASTCall ret;
     if (size(&tree->children) < 1) {
         fprintf(stderr, "ERROR: calling to nothing does not work!\n");
@@ -1035,10 +953,6 @@ void compileString(VM *vm, char *prog) {
     size_t funcId = size(&vm->funcs);
     add(&vm->funcs, Function());
     body.emit(vm, funcId, &symToReg, &valueToConstantSlot);
-}
-
-void *alloc(VM *vm, size_t size) {
-    return malloc(size);
 }
 
 void initFrame(VM *vm, ActivationFrame *frame, Function *func) {
