@@ -1,0 +1,39 @@
+* Done
++ Arguments from C++. Lua style, ie stack based.
+  (+ 1 2 3) becomes
+  pushValue(vm, value(1));
+  pushValue(vm, value(2));
+  pushValue(vm, value(3));
+  getGlobal(vm, symbol(vm, "+"));
+  call(vm, 3);
++ Objects
+  Do this before closures, bc closures will use them.
+  I.E. symbol to symbol... Or maybe not?
+  Should prob be symbol to ASTVariable instead
++ quote.
+  + primitives
+  
+* Todo
+- Objects
+  - Parent
+  - Array part
+  - Replace with one built on top of DynamicVector
+- (better) string interning
+  Will need hashing
+- quote.
+  - lists
+    prob. just a call to a C function.
+  - objects
+- Move lambda from lexer to ast transformation
+- quote et. al. abreviations
+- Closures
+  Lua style upvalues will be used.
+- Globals
+- Calling C++
+- Lists, cons et. al.
+- Convert parse tree into lists
+- Macros
+- let
+- set!
+- if
+- for, maybe as iterators?

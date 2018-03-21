@@ -1,0 +1,6 @@
+lispis2
+*.o
+.tup
+.vscode
+*~
+vgcore.*

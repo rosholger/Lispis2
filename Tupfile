@@ -1,0 +1,2 @@
+: foreach *.cpp |> g++ -std=gnu++11 -Wall -Werror -O0 -g -c %f -o %o |> %B.o
+: *.o |> g++ -std=gnu++11 -Wall -Werror -O0 -g %f -o %o |> lispis2
