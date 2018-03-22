@@ -12,12 +12,18 @@
   Should prob be symbol to ASTVariable instead
 + quote.
   + primitives
++ Convert parse tree into lists
++ Pretty printing for lists
   
 * Todo
+- Globals
 - Objects
+  - Replace with one built on top of DynamicVector
+    map sucks
   - Parent
   - Array part
-  - Replace with one built on top of DynamicVector
+- multi-line printing of arrays
+- Printing objects
 - (better) string interning
   Will need hashing
 - quote.
@@ -31,7 +37,6 @@
 - Globals
 - Calling C++
 - Lists, cons et. al.
-- Convert parse tree into lists
 - Macros
 - let
 - set!

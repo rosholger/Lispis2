@@ -43,6 +43,9 @@ OpCodeType opCodeTypes[] = {
     OT_RI, // LOAD_FUNC
     OT_R,  // MAKE_OBJECT
     OT_RRR,// SET_OBJECT_SLOT
+    OT_RI, // DEFINE_GLOBAL
+    OT_RI, // GET_GLOBAL
+    OT_N,  // RETURN_UNDEF
 };
 
 #define OPCODE(op) #op,
@@ -67,6 +70,7 @@ enum ValueType {
     V_CONS_PAIR,
     V_OPAQUE_POINTER, 
     V_OBJECT,
+    V_UNDEF,
 };
 
 struct ActivationFrame {
@@ -78,17 +82,22 @@ struct ActivationFrame {
     uint8 retReg;
 };
 
-struct VM {
-    DynamicArray<Function> funcs;
-    DynamicArray<Value> apiStack;
-};
-
-typedef size_t (*CFunction)(VM *vm);
-
 struct Object {
     Object() : table(std::map<int, Value>()) {}
     std::map<int, Value> table;
 };
+
+struct VM {
+    DynamicArray<Function> funcs;
+    DynamicArray<Value> apiStack;
+    Object globals;
+};
+
+// WARNING: arguments are in reverse,
+// ie last argument is the top of the stack
+typedef size_t (*CFunction)(VM *vm, size_t numArgs);
+
+struct ConsPair;
 
 struct Value {
     ValueType type;
@@ -97,16 +106,34 @@ struct Value {
         CFunction cfunc;
         double doub;
         bool boolean;
-        int symid; // maybe make symid 64bit?
+        struct {
+            int symid; // maybe make symid 64bit?
+            char *symstr;
+        };
         Object *object;
         struct {
             uint64 opaqueType;
             void *opaque;
         };
-        struct {
-            Value *car;
-            Value *cdr;
-        };
+        ConsPair *pair;
     };
 };
+
+struct ConsPair {
+    Value car;
+    Value cdr;
+};
+
+Value at(Value v, size_t idx) {
+    Value ret = v;
+    assert(ret.type == V_CONS_PAIR);
+    assert(ret.pair);
+    for (size_t i = 0; i < idx; ++i) {
+        ret = ret.pair->cdr;
+        assert(ret.type == V_CONS_PAIR);
+        assert(ret.pair);
+    }
+    return ret.pair->car;
+}
+
 #endif
