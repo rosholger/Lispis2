@@ -14,15 +14,27 @@
   + primitives
 + Convert parse tree into lists
 + Pretty printing for lists
++ Globals
   
 * Todo
-- Globals
+- Make the compiler compile function by function
+  That is, dont parse the file then compile but parse a function,
+  then compile it.
+  This helps macros a LOT!
+  Would also make mismatched parens crash, which is good
+  bc right now we just get weird behavior.
+  Need a generic parseExpr() that dispatch to different parse*()
+  instead of just parseList(). parseExpr should fail on EOF
+- Abstract char * into a stream for the parser.
+  Might be a good place for OOP
 - Objects
   - Replace with one built on top of DynamicVector
     map sucks
   - Parent
   - Array part
-- multi-line printing of arrays
+- Replace DynamicVector
+  std::vector sucks
+- multi-line printing of lists
 - Printing objects
 - (better) string interning
   Will need hashing
@@ -32,6 +44,10 @@
   - objects
 - Move lambda from lexer to ast transformation
 - quote et. al. abreviations
+- make-object sugar
+- get-object-slot
+- lambda sugar
+  [args] -> lambda (args)
 - Closures
   Lua style upvalues will be used.
 - Globals
