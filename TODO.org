@@ -17,6 +17,7 @@
 + Globals
   
 * Todo
+- REMOVE NEW
 - Make the compiler compile function by function
   That is, dont parse the file then compile but parse a function,
   then compile it.
@@ -25,8 +26,6 @@
   bc right now we just get weird behavior.
   Need a generic parseExpr() that dispatch to different parse*()
   instead of just parseList(). parseExpr should fail on EOF
-- Abstract char * into a stream for the parser.
-  Might be a good place for OOP
 - Objects
   - Replace with one built on top of DynamicVector
     map sucks
@@ -58,3 +57,6 @@
 - set!
 - if
 - for, maybe as iterators?
+- Abstract char * into a stream for the parser.
+  Might be a good place for "OOP"
+- GC

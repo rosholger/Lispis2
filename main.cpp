@@ -8,10 +8,6 @@
 #include <map>
 #include <string>
 
-void *alloc(VM *vm, size_t size) {
-    return calloc(1, size);
-}
-
 using std::vector;
 using std::map;
 
@@ -163,6 +159,7 @@ Token nextToken(LexState *state) {
             tok.symstr = stringPool[s];
             tok.symid = symbolIds[tok.symstr];
         } else {
+            // WARNING!!
             tok.symstr = strdup(temp_str);
             tok.symid = symbolIdTop;
             symbolIdTop++;
@@ -173,28 +170,6 @@ Token nextToken(LexState *state) {
     Token ret = state->nextToken;
     state->nextToken = tok;
     return ret;
-}
-
-template <typename T>
-void add(DynamicArray<T> *a, T v) {
-    a->v.push_back(v);
-}
-
-template <typename T>
-T pop(DynamicArray<T> *a) {
-    T ret = a->v[size(a)-1];
-    a->v.pop_back();
-    return ret;
-}
-
-template <typename T>
-void resize(DynamicArray<T> *a, size_t newSize) {
-    a->v.resize(newSize);
-}
-
-template <typename T>
-size_t size(DynamicArray<T> *a) {
-    return a->v.size();
 }
 
 LexState initLexerState(char *prog) {
@@ -208,45 +183,56 @@ LexState initLexerState(char *prog) {
     return ret;
 }
 
-#define allocPair(vm, parent)                                   \
-    do {                                                        \
-        parent->pair = (ConsPair *)alloc(vm, sizeof(ConsPair)); \
-        parent->pair->cdr.type = V_CONS_PAIR;                   \
-        parent->pair->cdr.pair = 0;                             \
-        parent->pair->car.type = V_CONS_PAIR;                   \
-        parent->pair->car.pair = 0;                             \
+#define allocPair(vm, parent)                                           \
+    do {                                                                \
+        getC(vm, parent).cdr.type = V_CONS_PAIR;                        \
+        getC(vm, parent).cdr.pair = 0;                                  \
+        getC(vm, parent).car.type = V_CONS_PAIR;                        \
+        getC(vm, parent).car.pair = 0;                                  \
     } while(false)
 
-void parseList(VM *vm, LexState *lex, Value *parent);
+void parseList(VM *vm, LexState *lex, Handle parent);
 
-void parseExpr(VM *vm, LexState *lex, Value *parent) {
-    assert(parent->type == V_CONS_PAIR);
-    assert(parent->pair == 0);
+void parseExpr(VM *vm, LexState *lex, Handle parent) {
+    //assert(getC(vm, parent).type == V_CONS_PAIR);
+    //assert(getC(vm, parent).pair == 0);
     Token tok = nextToken(lex);
     switch (tok.type) {
         case T_DOUBLE: {
             allocPair(vm, parent);
-            parent->pair->car.type = V_DOUBLE;
-            parent->pair->car.doub = tok.d;
+            getC(vm, parent).car.type = V_DOUBLE;
+            getC(vm, parent).car.doub = tok.d;
         } break;
         case T_BOOLEAN: {
             allocPair(vm, parent);
-            parent->pair->car.type = V_BOOLEAN;
-            parent->pair->car.boolean = tok.b;
+            getC(vm, parent).car.type = V_BOOLEAN;
+            getC(vm, parent).car.boolean = tok.b;
         } break;
         case T_SYMBOL: {
             allocPair(vm, parent);
-            parent->pair->car.type = V_SYMBOL;
-            parent->pair->car.symstr = tok.symstr;
-            parent->pair->car.symid = tok.symid;
+            getC(vm, parent).car.type = V_SYMBOL;
+            getC(vm, parent).car.symstr = tok.symstr;
+            getC(vm, parent).car.symid = tok.symid;
         } break;
         case T_LEFT_PAREN: {
             if (peekToken(lex).type != T_RIGHT_PAREN) {
                 allocPair(vm, parent);
-                parent->pair->car.type = V_CONS_PAIR;
-                parseList(vm, lex, &parent->pair->car);
+                getC(vm, parent).car.type = V_CONS_PAIR;
+                ConsPair *p = allocConsPair(vm);
+                getC(vm, parent).car.pair = p;
+                Handle car = reserve(vm, getC(vm, parent).car.pair);
+                parseList(vm, lex, car);
+                free(vm, car);
             }
             nextToken(lex);
+        } break;
+        case T_RIGHT_PAREN: {
+            fprintf(stderr, "ERROR: Mismatching parenthesis, more ) than (\n");
+            assert(false);
+        } break;
+        case T_EOF: {
+            fprintf(stderr, "ERROR: Mismatching parenthesis, more ( than )\n");
+            assert(false);
         } break;
         default: {
             fprintf(stderr, "ERROR: %d not recognized yet\n", tok.type);
@@ -255,58 +241,24 @@ void parseExpr(VM *vm, LexState *lex, Value *parent) {
     }
 }
 
-void parseList(VM *vm, LexState *lex, Value *parent) {
+void parseList(VM *vm, LexState *lex, Handle parent) {
 
     Token tok = peekToken(lex);
-    while (tok.type != T_RIGHT_PAREN && tok.type != T_EOF) {
-        // Replace with parseExpr(vm, ps, parent)
-#if 1
-        // Wrong, ((define a (lambda (b c) b)) (a true false)) becomes
-        // (define a ((c))), seems like we are skipping the first
-        // token both on entering and leaving lists in parseExpr
-        parseExpr(vm, lex, parent);
+    Handle currParent = reserve(vm, &getC(vm, parent));
+    while (tok.type != T_RIGHT_PAREN) {
+        parseExpr(vm, lex, currParent);
         tok = peekToken(lex);
-#else
-        assert(parent->type == V_CONS_PAIR);
-        assert(parent->pair == 0);
-        switch (tok.type) {
-            case T_DOUBLE: {
-                allocPair(vm, parent);
-                parent->pair->car.type = V_DOUBLE;
-                parent->pair->car.doub = tok.d;
-            } break;
-            case T_BOOLEAN: {
-                allocPair(vm, parent);
-                parent->pair->car.type = V_BOOLEAN;
-                parent->pair->car.boolean = tok.b;
-            } break;
-            case T_SYMBOL: {
-                allocPair(vm, parent);
-                parent->pair->car.type = V_SYMBOL;
-                parent->pair->car.symstr = tok.symstr;
-                parent->pair->car.symid = tok.symid;
-            } break;
-            case T_LEFT_PAREN: {
-                if (peekToken(&ps->lexer).type != T_RIGHT_PAREN) {
-                    allocPair(vm, parent);
-                    parent->pair->car.type = V_CONS_PAIR;
-                    parseList(vm, ps, &parent->pair->car);
-                }
-            } break;
-            default: {
-                fprintf(stderr, "ERROR: %d not recognized yet\n", tok.type);
-                assert(false);
-            } break;
-        }
-        tok = nextToken(&ps->lexer);
-#endif
-        if (tok.type != T_RIGHT_PAREN && tok.type != T_EOF) {
-            parent->pair->cdr.pair = (ConsPair *)alloc(vm, sizeof(ConsPair));
-            parent = &parent->pair->cdr;
-            parent->type = V_CONS_PAIR;
-            parent->pair = 0;
+        if (tok.type != T_RIGHT_PAREN) {
+            ConsPair *p = allocConsPair(vm);
+            getC(vm, currParent).cdr.pair = p;
+            Handle newCurrParent = reserve(vm,
+                                           getC(vm,
+                                                currParent).cdr.pair);
+            free(vm, currParent);
+            currParent = newCurrParent;
         }
     }
+    free(vm, currParent);
 }
 
 void add(Object *o, int symid, Value v) {
@@ -514,12 +466,11 @@ struct ASTVariable : ASTNode {
     virtual void emit(VM *vm, size_t funcID,
                       map<int, VarReg> *symToReg,
                       map<Value, size_t> *valueToConstantSlot) {
-        size_t reg;
         if (!symToReg->count(symbol.symid)) {
-            reg = allocReg(&vm->funcs[funcID]);
-            (*symToReg)[symbol.symid].reg = reg;
+            (*symToReg)[symbol.symid].reg = allocReg(&vm->funcs[funcID]);
         }
         if ((*symToReg)[symbol.symid].global) {
+            size_t reg = (*symToReg)[symbol.symid].reg;
             Value v{V_SYMBOL};
             v.symid = symbol.symid;
             v.symstr = symbol.str;
@@ -1152,21 +1103,33 @@ void printFuncCode(Function *func) {
 
 void compileString(VM *vm, char *prog) {
     LexState lex = initLexerState(prog);
-    Value root{V_CONS_PAIR};
-    Value *tree = &root;
     map<int, VarReg> symToReg;
     map<Value, size_t> valueToConstantSlot;
     size_t funcID = size(&vm->funcs);
     add(&vm->funcs, Function());
     ASTNode *node = 0;
-    while (peekToken(&lex).type != T_EOF) {
-        parseExpr(vm, &lex, tree);
-        printValue(tree->pair->car);
-        printf("\n");
-        node = exprToAST(tree->pair->car);
-        node->traverse();
-        node->emit(vm, funcID, &symToReg, &valueToConstantSlot);
-        tree = &tree->pair->cdr;
+    {
+        ConsPair *root = allocConsPair(vm);
+        Handle handle = reserve(vm, root);
+        Handle currTree = handle;
+        while (peekToken(&lex).type != T_EOF) {
+            parseExpr(vm, &lex, currTree);
+            printf("\n");
+            printValue(getC(vm, currTree).car);
+            printf("\n\n");
+            node = exprToAST(getC(vm, currTree).car);
+            node->traverse();
+            node->emit(vm, funcID, &symToReg, &valueToConstantSlot);
+            if (peekToken(&lex).type != T_EOF) {
+                ConsPair *p = allocConsPair(vm);
+                getC(vm, currTree).cdr.pair = p;
+                Handle temp = reserve(vm, getC(vm, currTree).cdr.pair);
+                free(vm, currTree);
+                currTree = temp;
+            } else {
+                free(vm, currTree);
+            }
+        }
     }
     if (!node) {
         fprintf(stderr, "ERROR: Empty 'file' is not allowed\n");
@@ -1179,35 +1142,49 @@ void compileString(VM *vm, char *prog) {
     } else {
         addN(&vm->funcs[funcID], OP_RETURN_UNDEF);
     }
-
-    //printValue(ps.root);
-    //printf("\n");
-    //ASTBody body = bodyToAST(ps.root);
-    //body.traverse();
-    //body.emit(vm, funcId, &symToReg, &valueToConstantSlot);
 }
 
-void initFrame(VM *vm, ActivationFrame *frame, Function *func) {
+void compileFile(VM *vm, const char *path) {
+    FILE *file = fopen(path, "r");
+    long int length;
+    fseek(file, 0, SEEK_END);
+    length = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    char *prog = (char *)malloc(length+1);
+    prog[length] = 0;
+    fread(prog, sizeof(char), length, file);
+    fclose(file);
+    compileString(vm, prog);
+}
+
+size_t allocFrame(VM *vm, Function *func) {
+    ActivationFrame *frame;
+    if (vm->frameStackTop < size(&vm->frameStack)) {
+        frame = &vm->frameStack[vm->frameStackTop];
+    } else {
+        ActivationFrame newFrame;
+        add(&vm->frameStack, newFrame);
+        frame = &vm->frameStack[size(&vm->frameStack)-1];
+    }
+    vm->frameStackTop++;
     *frame = ActivationFrame();
     frame->func = func; // Might this break?? or not??
     resize(&frame->registers, frame->func->numRegs);
+    return vm->frameStackTop;
+}
+
+void popFrame(VM *vm) {
+    vm->frameStackTop--;
 }
 
 
-void initFrame(VM *vm, ActivationFrame *frame, size_t funcID) {
-    initFrame(vm, frame, &vm->funcs[funcID]);
+size_t allocFrame(VM *vm, size_t funcID) {
+    return allocFrame(vm, &vm->funcs[funcID]);
 }
 
-Object *allocObject(VM *vm) {
-    Object *ret = (Object *)alloc(vm, sizeof(Object));
-    Object temp;
-    memcpy(ret, &temp, sizeof(Object));
-    *ret = temp;
-    return ret;
-}
-
-Value runFunc(VM *vm, ActivationFrame *frame) {
+Value runFunc(VM *vm, size_t frameID) {
     OpCode undecoded;
+    ActivationFrame *frame = &vm->frameStack[frameID-1];
  loop:
     undecoded = frame->func->code[frame->pc];
     OpCode instr = getOp(undecoded);
@@ -1224,20 +1201,23 @@ Value runFunc(VM *vm, ActivationFrame *frame) {
         case OP_RETURN: {
             uint8 reg = getRegA(undecoded);
             if (frame->caller) {
-                frame->caller->registers[frame->retReg] =
-                    frame->registers[reg];
-                frame = frame->caller;
+                ActivationFrame *caller = &vm->frameStack[frame->caller-1];
+                caller->registers[frame->retReg] = frame->registers[reg];
+                frame = caller;
             } else {
                 return frame->registers[reg];
             }
+            popFrame(vm);
         } break;
         case OP_RETURN_UNDEF: {
             if (frame->caller) {
-                frame->caller->registers[frame->retReg] = Value{V_UNDEF};
-                frame = frame->caller;
+                ActivationFrame *caller = &vm->frameStack[frame->caller-1];
+                caller->registers[frame->retReg] = Value{V_UNDEF};
+                frame = caller;
             } else {
                 return Value{V_UNDEF};
             }
+            popFrame(vm);
         } break;
         case OP_LOAD_FUNC: {
             uint8 reg = getRegA(undecoded);
@@ -1317,10 +1297,11 @@ Value runFunc(VM *vm, ActivationFrame *frame) {
         Value callee = frame->registers[calleeReg];
         assert(callee.type == V_FUNCTION);
         frame->pc++;
-        ActivationFrame *calleeFrame = (ActivationFrame *)alloc(vm,
-                                                                sizeof(ActivationFrame));
-        initFrame(vm, calleeFrame, callee.funcID);
-        calleeFrame->caller = frame;
+        
+        size_t calleeFrameID = allocFrame(vm, callee.funcID);
+        frame = &vm->frameStack[frameID-1];
+        ActivationFrame *calleeFrame = &vm->frameStack[calleeFrameID-1];
+        calleeFrame->caller = frameID;
         uint8 dstReg = 0;
     pushArgLoop:
         undecoded = frame->func->code[frame->pc];
@@ -1357,30 +1338,23 @@ Value runFunc(VM *vm, ActivationFrame *frame) {
     }
 }
 
-
-Value runFunc(VM *vm, size_t funcID) {
-    ActivationFrame frame;
-    initFrame(vm, &frame, funcID);
-    return runFunc(vm, &frame);
-}
-
 void pushValue(VM *vm, Value v) {
     add(&vm->apiStack, v);
 }
 
 void call(VM *vm, uint8 numArgs) {
-    ActivationFrame frame;
     Value callee = pop(&vm->apiStack);
     assert(callee.type == V_FUNCTION);
-    initFrame(vm, &frame, callee.funcID);
+    size_t frameID = allocFrame(vm, callee.funcID);
+    ActivationFrame *frame = &vm->frameStack[frameID-1];
     uint8 reg = 0;
     for (size_t i = size(&vm->apiStack)-numArgs-1;
          i < size(&vm->apiStack); ++i) {
-        frame.registers[reg] = vm->apiStack[i];
+        frame->registers[reg] = vm->apiStack[i];
         reg++;
     }
     resize(&vm->apiStack, size(&vm->apiStack)-numArgs);
-    pushValue(vm, runFunc(vm, &frame));
+    pushValue(vm, runFunc(vm, frameID));
 }
 
 Value peek(VM *vm, int idx) {
@@ -1398,12 +1372,12 @@ void getGlobal(VM *vm, int symid) {
 
 int main(int argc, char *argv[]) {
     VM vm;
-    compileString(&vm, (char *)"(define a (lambda (b c) b)) (a true false)");
+    compileFile(&vm, "./basic.lsp");
     for (size_t i = 0; i < size(&vm.funcs); ++i) {
-        printf("FUNC: %lu\n", i);
+        printf("\nFUNC: %lu\n", i);
         printFuncCode(&vm.funcs[i]);
     }
-    printf("RUNNING:\n");
+    printf("\nRUNNING:\n");
     {
         Value f = {V_FUNCTION};
         f.funcID = 0;
@@ -1412,5 +1386,5 @@ int main(int argc, char *argv[]) {
     call(&vm, 0);
     //getGlobal(&vm, 1);
     printValue(peek(&vm, -1));
-    printf("\nDONE\n");
+    printf("\n");
 }

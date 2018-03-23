@@ -1,6 +1,8 @@
 #ifndef VM_H
 #define VM_H
 
+#include "gc.h"
+
 #include <vector>
 #include <map>
 #include <cassert>
@@ -14,6 +16,38 @@ struct DynamicArray {
     }
 };
 
+template <typename T>
+size_t size(DynamicArray<T> *a) {
+    return a->v.size();
+}
+
+template <typename T>
+T *array(DynamicArray<T> *a) {
+    return a->v.size();
+}
+
+template <typename T>
+void resize(DynamicArray<T> *a, size_t newSize) {
+    a->v.resize(newSize);
+}
+
+template <typename T>
+void add(DynamicArray<T> *a, T v) {
+    a->v.push_back(v);
+}
+
+template <typename T>
+T pop(DynamicArray<T> *a) {
+    T ret = a->v[size(a)-1];
+    a->v.pop_back();
+    return ret;
+}
+
+template <typename T>
+void remove(DynamicArray<T> *a, size_t idx) {
+    auto nth = a->v.begin() + idx;
+    a->v.erase(nth);
+}
 
 typedef unsigned char uint8;
 typedef unsigned int uint32;
@@ -33,25 +67,9 @@ enum OpCodeType {
     OT_RI
 };
 
-OpCodeType opCodeTypes[] = {
-    OT_RI, // LOADK
-    OT_RR, // LOAD_LOCAL
-    OT_R,  // SETUP_CALL
-    OT_R,  // PUSH_ARG
-    OT_R,  // CALL
-    OT_R,  // RETURN
-    OT_RI, // LOAD_FUNC
-    OT_R,  // MAKE_OBJECT
-    OT_RRR,// SET_OBJECT_SLOT
-    OT_RI, // DEFINE_GLOBAL
-    OT_RI, // GET_GLOBAL
-    OT_N,  // RETURN_UNDEF
-};
+extern OpCodeType opCodeTypes[];
 
-#define OPCODE(op) #op,
-const char *opCodeStr[] = {
-#include "opcodes.h"
-};
+extern const char *opCodeStr[];
 
 struct Value;
 
@@ -76,22 +94,34 @@ enum ValueType {
 struct ActivationFrame {
     DynamicArray<Value> registers;
     size_t stackTop = 0;
-    Function *func;
+    Function *func = 0;
     size_t pc = 0;
-    ActivationFrame *caller = 0; // null if C
-    uint8 retReg;
+    size_t caller = 0; // 0 if C, frameID of caller is this - 1
+    //ActivationFrame *caller = 0; // null if C
+    uint8 retReg = 0;
 };
 
 struct Object {
-    Object() : table(std::map<int, Value>()) {}
+    GCObject gcObj;
+    Object();
     std::map<int, Value> table;
+};
+
+struct Handle {
+    size_t handle;
 };
 
 struct VM {
     DynamicArray<Function> funcs;
     DynamicArray<Value> apiStack;
+    DynamicArray<ActivationFrame> frameStack;
+    DynamicArray<GCObject *> handles;
+    size_t frameStackTop = 0;
     Object globals;
+    GC gc;
 };
+
+void free(VM *vm, Handle handle);
 
 // WARNING: arguments are in reverse,
 // ie last argument is the top of the stack
@@ -99,7 +129,29 @@ typedef size_t (*CFunction)(VM *vm, size_t numArgs);
 
 struct ConsPair;
 
+/*
+  The evaluation order of
+  getC(vm, currParent).cdr.pair = allocConsPair(vm);
+  is unspecified, meaning that it may choose to
+  first evaluate getC then allocConsPair. If allocConsPair
+  triggers a gc cycle then the pointer that getC
+  returned is invalidated and we get weird, imposible to
+  debug crashes that look like gc bugs. 
+  ╔═╗╦ ╦╔═╗╦╔═  ╔╦╗╦ ╦╔═╗  ╔═╗╔╦╗╔═╗╔╗╔╔╦╗╔═╗╦═╗╔╦╗
+  ╠╣ ║ ║║  ╠╩╗   ║ ╠═╣║╣   ╚═╗ ║ ╠═╣║║║ ║║╠═╣╠╦╝ ║║
+  ╚  ╚═╝╚═╝╩ ╩   ╩ ╩ ╩╚═╝  ╚═╝ ╩ ╩ ╩╝╚╝═╩╝╩ ╩╩╚══╩╝
+*/
+ConsPair &getC(VM *vm, Handle handle);
+Object &getO(VM *vm, Handle handle);
+
+Handle reserve(VM *vm, ConsPair *c);
+Handle reserve(VM *vm, Object *o);
+
+// Maybe move to NAN-tagging, its cool as fuck!
+// Would slow down my strings, but who cares about strings anyway?
 struct Value {
+    Value();
+    Value(ValueType t);
     ValueType type;
     union {
         size_t funcID;
@@ -120,20 +172,14 @@ struct Value {
 };
 
 struct ConsPair {
+    ConsPair();
+    GCObject gcObj;
     Value car;
     Value cdr;
 };
 
-Value at(Value v, size_t idx) {
-    Value ret = v;
-    assert(ret.type == V_CONS_PAIR);
-    assert(ret.pair);
-    for (size_t i = 0; i < idx; ++i) {
-        ret = ret.pair->cdr;
-        assert(ret.type == V_CONS_PAIR);
-        assert(ret.pair);
-    }
-    return ret.pair->car;
-}
+Value at(Value v, size_t idx);
 
+ConsPair *allocConsPair(VM *vm);
+Object *allocObject(VM *vm);
 #endif
