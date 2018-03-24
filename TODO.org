@@ -1,24 +1,30 @@
-* Done
-+ Arguments from C++. Lua style, ie stack based.
++ [X] Arguments from C++. Lua style, ie stack based.
+
   (+ 1 2 3) becomes
+  #+BEGIN_SRC C++
   pushValue(vm, value(1));
   pushValue(vm, value(2));
   pushValue(vm, value(3));
   getGlobal(vm, symbol(vm, "+"));
   call(vm, 3);
-+ Objects
-  Do this before closures, bc closures will use them.
-  I.E. symbol to symbol... Or maybe not?
-  Should prob be symbol to ASTVariable instead
-+ quote.
-  + primitives
-+ Convert parse tree into lists
-+ Pretty printing for lists
-+ Globals
+  #+END_SRC
+
++ [X] Convert parse tree into lists
+
++ [X] Pretty printing for lists
+
++ [X] Globals
+
++ [X] Move lambda from lexer to ast transformation
+
++ [X] Printing objects
+
++ [X] GC
   
-* Todo
-- REMOVE NEW
-- Make the compiler compile function by function
+  Works like a charm!
+
++ [X] Make the compiler compile function by function
+
   That is, dont parse the file then compile but parse a function,
   then compile it.
   This helps macros a LOT!
@@ -26,37 +32,84 @@
   bc right now we just get weird behavior.
   Need a generic parseExpr() that dispatch to different parse*()
   instead of just parseList(). parseExpr should fail on EOF
-- Objects
-  - Replace with one built on top of DynamicVector
-    map sucks
-  - Parent
-  - Array part
-- Replace DynamicVector
+
++ [X] better symbol interning
+  
++ [ ] intern keywords and make the ast builder use the inturned versions
+  
++ [ ] REMOVE NEW
+  
++ [ ] Change strings from char * to struct String
+
++ [ ] Objects
+
+  + [X] Replace with one built on top of DynamicVector
+
+    std::map sucks
+
+  + [ ] Parent
+
+  + [ ] Array part
+
++ [ ] Replace DynamicVector
+
   std::vector sucks
-- multi-line printing of lists
-- Printing objects
-- (better) string interning
-  Will need hashing
-- quote.
-  - lists
+
++ [ ] multi-line printing of lists
+
++ [ ] string interning?
+
++ [ ] quote.
+
+  + [X] primitives
+
+
+  + [ ] lists
+
     prob. just a call to a C function.
-  - objects
-- Move lambda from lexer to ast transformation
-- quote et. al. abreviations
-- make-object sugar
-- get-object-slot
-- lambda sugar
+
+  + [ ] objects
+
++ [ ] quote et. al. abreviations
+
++ [ ] make-object sugar
+
++ [ ] get-object-slot
+
++ [ ] get-object-slot sugar
+
++ [ ] lambda sugar
+
   [args] -> lambda (args)
-- Closures
+
++ [ ] Closures
+
   Lua style upvalues will be used.
-- Globals
-- Calling C++
-- Lists, cons et. al.
-- Macros
-- let
-- set!
-- if
-- for, maybe as iterators?
-- Abstract char * into a stream for the parser.
+
++ [ ] Globals
+
++ [ ] Calling C++
+
++ [ ] Lists, cons et. al.
+
++ [ ] Macros
+
++ [ ] let
+
++ [ ] set!
+
++ [ ] if
+
++ [ ] for, maybe as iterators?
+
++ [ ] Abstract char * into a stream for the parser.
+
   Might be a good place for "OOP"
-- GC
+
++ [ ] Tune GC
+  
++ [ ] Basic register allocation
+
+  Right now we dont reuse registers that are used for temporaries.
+  This is a problem for the GC, since it means that functions keep
+  all their temporaries alive.

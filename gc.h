@@ -23,6 +23,7 @@ struct GC {
 enum GCObjectType {
     GC_CONS_PAIR,
     GC_OBJECT,
+    GC_STRING,
     GC_BROKEN_HEART,
 };
 

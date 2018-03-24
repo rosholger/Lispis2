@@ -4,8 +4,15 @@
 #include "gc.h"
 
 #include <vector>
-#include <map>
 #include <cassert>
+#include <cstring>
+#include <cstdint>
+
+struct DynamicArrayData {
+    GCObject gcObject;
+    bool containsValues; // ie struct Value
+    char data[0];
+};
 
 template <typename T>
 struct DynamicArray {
@@ -27,8 +34,8 @@ T *array(DynamicArray<T> *a) {
 }
 
 template <typename T>
-void resize(DynamicArray<T> *a, size_t newSize) {
-    a->v.resize(newSize);
+void resize(DynamicArray<T> *a, size_t newSize, T val = T()) {
+    a->v.resize(newSize, val);
 }
 
 template <typename T>
@@ -47,6 +54,11 @@ template <typename T>
 void remove(DynamicArray<T> *a, size_t idx) {
     auto nth = a->v.begin() + idx;
     a->v.erase(nth);
+}
+
+template <typename T>
+void clear(DynamicArray<T> *a) {
+    a->v.clear();
 }
 
 typedef unsigned char uint8;
@@ -80,15 +92,17 @@ struct Function {
 };
 
 enum ValueType {
+    V_UNDEF, // Has to be first, bc zeroing a Value should result in undef
     V_FUNCTION,
     V_SYMBOL,
+    V_STRING,
     V_DOUBLE,
     V_BOOLEAN,
     V_CFUNCTION,
     V_CONS_PAIR,
     V_OPAQUE_POINTER, 
     V_OBJECT,
-    V_UNDEF,
+    V_REG_OR_CONSTANT, // Used by compiler only.
 };
 
 struct ActivationFrame {
@@ -101,15 +115,23 @@ struct ActivationFrame {
     uint8 retReg = 0;
 };
 
+struct ObjectSlot;
+
+// Maybe allow strings as keys to?
+// IE symbols, strings and doubles.
+// This would make Object perfect for string interning.
 struct Object {
     GCObject gcObj;
     Object();
-    std::map<int, Value> table;
+    DynamicArray<ObjectSlot> slots;
 };
+
+void clear(Object *obj);
 
 struct Handle {
     size_t handle;
 };
+
 
 struct VM {
     DynamicArray<Function> funcs;
@@ -119,6 +141,8 @@ struct VM {
     size_t frameStackTop = 0;
     Object globals;
     GC gc;
+    Object symbolTable;
+    int symbolIdTop = 0;
 };
 
 void free(VM *vm, Handle handle);
@@ -147,8 +171,15 @@ Object &getO(VM *vm, Handle handle);
 Handle reserve(VM *vm, ConsPair *c);
 Handle reserve(VM *vm, Object *o);
 
+struct String {
+    GCObject gcObj;
+    size_t length;
+    char str[0];
+};
+
 // Maybe move to NAN-tagging, its cool as fuck!
 // Would slow down my strings, but who cares about strings anyway?
+// WARNING!! Strings leak!
 struct Value {
     Value();
     Value(ValueType t);
@@ -159,9 +190,14 @@ struct Value {
         double doub;
         bool boolean;
         struct {
+            uint8 regOrConstant;
+            bool global;
+        };
+        struct {
             int symid; // maybe make symid 64bit?
             char *symstr;
         };
+        char *str;
         Object *object;
         struct {
             uint64 opaqueType;
@@ -169,6 +205,13 @@ struct Value {
         };
         ConsPair *pair;
     };
+};
+// if key is V_UNDEF and value is true then this is a tombstone,
+// if key is V_UNDEF and value is false then this cell is empty
+// Warning! Adding anything breaks GC
+struct ObjectSlot {
+    Value key;
+    Value value;
 };
 
 struct ConsPair {
@@ -182,4 +225,62 @@ Value at(Value v, size_t idx);
 
 ConsPair *allocConsPair(VM *vm);
 Object *allocObject(VM *vm);
+
+// Change to set
+void add(VM *vm, Object *o, Value key, Value value);
+Value &get(Object *o, Value key);
+bool keyExists(Object *o, Value key);
+
+void clearStack(VM *vm);
+
+inline
+bool operator==(Value a, Value b) {
+    if (a.type != b.type) {
+        return false;
+    } else {
+        switch (a.type) {
+            case V_BOOLEAN: {
+                return a.boolean == b.boolean;
+            } break;
+            case V_CFUNCTION: {
+                return a.cfunc == b.cfunc;
+            } break;
+            case V_CONS_PAIR: {
+                return a.pair == b.pair;
+            } break;
+            case V_DOUBLE: {
+                return a.doub == b.doub;
+            } break;
+            case V_FUNCTION: {
+                return a.funcID == b.funcID;
+            } break;
+            case V_OBJECT: {
+                return a.object == b.object;
+            } break;
+            case V_OPAQUE_POINTER: {
+                // We assume that a.opaqueType == b.opaqueType if
+                // a.opaque == b.opaque
+                return a.opaque == b.opaque; 
+            } break;
+            case V_STRING: {
+                // Make strings store a hash
+                return !strcmp(a.str, b.str);
+            } break;
+            case V_SYMBOL: {
+                return a.symid == b.symid;
+            } break;
+            case V_UNDEF: {
+                return false;
+            } break;
+            case V_REG_OR_CONSTANT: {
+                return (a.regOrConstant == b.regOrConstant &&
+                        a.global == b.global);
+            } break;
+        }
+    }
+    return false; // unreachable
+}
+
+// Illegal to use vm after calling freeVM on it.
+void freeVM(VM *vm);
 #endif

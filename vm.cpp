@@ -29,8 +29,10 @@ const char *opCodeStr[] = {
 };
 #undef OPCODE
 
-Object::Object() : gcObj(GCObject{GC_OBJECT}),
-                   table(std::map<int, Value>()) {}
+Object::Object() : gcObj(GCObject{GC_OBJECT}) {
+    resize(&slots, 1);
+    slots[0].key.type = V_UNDEF;
+}
 
 ConsPair::ConsPair() : gcObj(GCObject{GC_CONS_PAIR}) {}
 
@@ -39,6 +41,7 @@ Value::Value() : type(V_UNDEF) {
     opaqueType = 0;
     opaque = 0;
 }
+
 Value::Value(ValueType t) : type(t) {
     //Null value
     opaqueType = 0;
@@ -126,6 +129,17 @@ void visitValue(VM *vm, Value *v) {
                 assert(v->pair->gcObj.type <= GC_BROKEN_HEART);
             }
         } break;
+            /*
+        case V_STRING: {
+            if (v->str->gcObj.type == GC_BROKEN_HEART) {
+                v->str = *(String **)((&v->object->gcObj)+1);
+            } else {
+                v->str = (String *)copyFromTo(vm, &v->pair->gcObj,
+                                              sizeof(String) +
+                                              v->str->length);
+            }
+        } break;
+            */
         default:break;
     }
 }
@@ -138,10 +152,9 @@ void visitObject(VM *vm, GCObject *o) {
     switch (o->type) {
         case GC_OBJECT: {
             Object *obj = (Object *)o;
-            for (auto it = obj->table.begin();
-                 it != obj->table.end();
-                 ++it) {
-                visitValue(vm, &it->second);
+            for (size_t i = 0; i < size(&obj->slots); ++i) {
+                visitValue(vm, &obj->slots[i].key); // Might not be needed
+                visitValue(vm, &obj->slots[i].value);
             }
             vm->gc.nextToExamine += sizeof(Object);
         } break;
@@ -151,6 +164,7 @@ void visitObject(VM *vm, GCObject *o) {
             visitValue(vm, &c->cdr);
             vm->gc.nextToExamine += sizeof(ConsPair);
         } break;
+        case GC_STRING: break;
         default:assert(false);
     }
 }
@@ -208,6 +222,8 @@ void collect(VM *vm) {
     size_t numberOfFreedBytes = (numberOfAllocatedBytes -
                                  vm->gc.nextFree);
     printf("Freed: %lu bytes\n", numberOfFreedBytes);
+    vm->gc.fromSpace = 0;
+    vm->gc.fromSpaceSize = 0;
 }
 
 void *alloc(VM *vm, size_t size) {
@@ -223,6 +239,7 @@ void *alloc(VM *vm, size_t size) {
     if (vm->gc.nextFree + size > vm->gc.toSpaceSize) {
         fprintf(stderr, "Collection starting!\n");
         collect(vm);
+        // Implement heap growing
         assert(vm->gc.nextFree + size <= vm->gc.toSpaceSize);
     }
     void *ret = vm->gc.toSpace + vm->gc.nextFree;
@@ -280,8 +297,191 @@ ConsPair *allocConsPair(VM *vm) {
 
 Object *allocObject(VM *vm) {
     Object *ret = (Object *)alloc(vm, sizeof(Object));
-    Object temp;
-    memcpy(ret, &temp, sizeof(Object));
-    *ret = temp;
+    *ret = Object();
     return ret;
+}
+
+// Stolen from wren
+typedef union
+{
+  uint64_t bits64;
+  uint32_t bits32[2];
+  double doub;
+} DoubleBits;
+
+// Stolen from wren
+static inline uint32_t hashBits(DoubleBits bits)
+{
+  uint32_t result = bits.bits32[0] ^ bits.bits32[1];
+  result ^= (result >> 20) ^ (result >> 12);
+  result ^= (result >> 7) ^ (result >> 4);
+  return result;
+}
+
+static inline uint32_t hashDouble(double doub) {
+    DoubleBits bits;
+    bits.doub = doub;
+    return hashBits(bits);
+}
+
+// Change to doing this on stringAllocation instead
+static inline uint32_t hashString(char *string)
+{
+  // FNV-1a hash. See: http://www.isthe.com/chongo/tech/comp/fnv/
+  uint32_t hash = 2166136261u;
+  for (; *string; string++)
+  {
+    hash ^= *string;
+    hash *= 16777619;
+  }
+  return hash;
+}
+
+static inline uint32_t hashValue(Value v) {
+    switch (v.type) {
+        case V_SYMBOL: {
+            return v.symid;
+        } break;
+        case V_STRING: {
+            return hashString(v.str);
+        } break;
+        case V_DOUBLE: {
+            return hashDouble(v.doub);
+        } break;
+        default: {
+            fprintf(stderr, "Can only hash strings, symbols and doubles\n");
+            assert(false);
+        } break;
+    }
+}
+
+static void resizeObject(VM *vm, Object *o, size_t newSize);
+
+#define nextIdx(i) (i + 1) % size(&o->slots)
+
+static void insertNewSlot(VM *vm, Object *o,
+                          Value key, Value value) {
+    // We use Brent's variation. like lua (YAY!).
+    // Brent's variation mean that we:
+    // find main position.
+    // if collision:
+    //   if colliding key is in its main position:
+    //     move colliding key to its secondary position
+    //   else:
+    //     resize
+    //     insert into the resized object
+    // else:
+    //   insert key in this slot
+    //
+    // This means that everything is either in the main slot
+    // or the secondary slot, which means fast lookup
+    uint32_t mainIdx = hashValue(key) % size(&o->slots);
+    if (o->slots[mainIdx].key.type != V_UNDEF) {
+        // Collision
+        uint32_t collidingMainIdx = (hashValue(o->slots[mainIdx].key) %
+                                     size(&o->slots));
+        if (mainIdx == collidingMainIdx) {
+            // colliding slot is in this ones main position
+            if (o->slots[nextIdx(mainIdx)].key.type != V_UNDEF) {
+                // can't move colliding slot
+                resizeObject(vm, o, size(&o->slots)*2);
+                insertNewSlot(vm, o, key, value);
+                return;
+            } else {
+                // move colliding slot and insert this one in
+                // its main position
+                o->slots[nextIdx(mainIdx)] = o->slots[mainIdx];
+                o->slots[mainIdx].key = key;
+                o->slots[mainIdx].value = value;
+            }
+        } else {
+            if (o->slots[collidingMainIdx].key.type == V_UNDEF) {
+                // can move colliding slot to it's main position
+                o->slots[collidingMainIdx] = o->slots[mainIdx];
+                o->slots[mainIdx].key = key;
+                o->slots[mainIdx].value = value;
+            } else if (o->slots[nextIdx(mainIdx)].key.type != V_UNDEF) {
+                // can't put in secondary position
+                resizeObject(vm, o, size(&o->slots)*2);
+                insertNewSlot(vm, o, key, value);
+                return;
+            } else {
+                // put in secondary slot
+                o->slots[nextIdx(mainIdx)].key = key;
+                o->slots[nextIdx(mainIdx)].value = value;
+            }
+        }
+    } else {
+        // main slot free
+        o->slots[mainIdx].key = key;
+        o->slots[mainIdx].value = value;
+    }
+}
+
+// WARNING!!! When we implement our own DynamicArray
+// we have to be carefull about this function returning a pointer.
+Value *getSlot(Object *o, Value key) {
+    uint32_t mainIdx = hashValue(key) % size(&o->slots);
+    if (o->slots[mainIdx].key == key) {
+        // In main position
+        return &o->slots[mainIdx].value;
+    } else if (o->slots[nextIdx(mainIdx)].key == key) {
+        // In secondary position
+        return &o->slots[nextIdx(mainIdx)].value;
+    } else {
+        // Not present
+        return 0;
+    }
+}
+
+void insertSlot(VM *vm, Object *o, Value key, Value value) {
+    assert(key.type == V_STRING || key.type == V_SYMBOL ||
+           key.type == V_DOUBLE);
+    Value *p = getSlot(o, key);
+    if (p) {
+        *p = value;
+    } else {
+        insertNewSlot(vm, o, key, value);
+    }
+}
+
+static void resizeObject(VM *vm, Object *o, size_t newSize) {
+    DynamicArray<ObjectSlot> oldSlots = o->slots;
+    o->slots = DynamicArray<ObjectSlot>();
+    ObjectSlot emptySlot{Value{V_UNDEF}, Value{V_BOOLEAN}};
+    emptySlot.value.boolean = false;
+    resize(&o->slots, newSize, emptySlot);
+    for (size_t i = 0; i < size(&oldSlots); ++i) {
+        if (oldSlots[i].key.type != V_UNDEF) {
+            insertSlot(vm, o, oldSlots[i].key,
+                       oldSlots[i].value);
+        }
+    }
+}
+
+void add(VM *vm, Object *o, Value key, Value value) {
+    insertSlot(vm, o, key, value);
+}
+
+Value &get(Object *o, Value key) {
+    Value *v = getSlot(o, key);
+    assert(v);
+    return *v;
+}
+
+bool keyExists(Object *o, Value key) {
+    return getSlot(o, key);
+}
+
+void clearStack(VM *vm) {
+    clear(&vm->apiStack);
+}
+
+void clear(Object *obj) {
+    clear(&obj->slots);
+}
+
+void freeVM(VM *vm) {
+    munmap(vm->gc.toSpace, vm->gc.toSpaceSize);
+    munmap(vm->gc.fromSpace, vm->gc.fromSpaceSize);
 }

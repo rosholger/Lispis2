@@ -3,13 +3,9 @@
 #include <cstdio>
 #include <cctype>
 #include <cstdlib>
-#include <vector>
 #include <cassert>
-#include <map>
 #include <string>
-
-using std::vector;
-using std::map;
+#include <climits>
 
 enum TokenType {
     T_DOUBLE,
@@ -67,15 +63,46 @@ bool isFloatStartChar(int c) {
     return isdigit(c) || c == '.';
 }
 
-map<std::string, char *> stringPool;
-int symbolIdTop;
-map<void *, int> symbolIds;
-
 Token peekToken(LexState *state) {
     return state->nextToken;
 }
 
-Token nextToken(LexState *state) {
+void printValue(Value value);
+
+void printObject(Object *obj) {
+    printf("{(*pointer* %p)", obj);
+    for (size_t i = 0; i < size(&obj->slots); ++i) {
+        if (obj->slots[i].key.type != V_UNDEF) {
+            printf(" (");
+            printValue(obj->slots[i].key);
+            printf(" ");
+            printValue(obj->slots[i].value);
+            printf(")");
+        }
+    }
+    printf("}");
+}
+
+Value intern(VM *vm, const char *str) {
+    Value vStr{V_STRING};
+    // unsafe, so take care
+    vStr.str = (char *)str;
+    Value symbol{V_SYMBOL};
+    if (keyExists(&vm->symbolTable, vStr)) {
+        symbol = get(&vm->symbolTable, vStr);
+    } else {
+        // WARNING!! Leaking!!
+        Value s = vStr;
+        s.str = strdup(str);
+        symbol.symstr = s.str;
+        symbol.symid = vm->symbolIdTop;
+        vm->symbolIdTop++;
+        add(vm, &vm->symbolTable, s, symbol);
+    }
+    return symbol;
+}
+
+Token nextToken(VM *vm, LexState *state) {
     eatWhiteSpace(state);
     size_t tokStart = state->pos;
     const char *tokenDelimiters = ")( \n'`,";
@@ -153,29 +180,20 @@ Token nextToken(LexState *state) {
         assert(tokLength < 99);
         memcpy(temp_str, state->prog+tokStart, tokLength);
         temp_str[tokLength] = 0;
-        std::string s(temp_str);
-        map<std::string, char *>::iterator it = stringPool.find(s);
-        if (it != stringPool.end()) {
-            tok.symstr = stringPool[s];
-            tok.symid = symbolIds[tok.symstr];
-        } else {
-            // WARNING!!
-            tok.symstr = strdup(temp_str);
-            tok.symid = symbolIdTop;
-            symbolIdTop++;
-            stringPool[s] = tok.symstr;
-            symbolIds[tok.symstr] = tok.symid;
-        }
+        Value symbol = intern(vm, temp_str);
+        tok.symstr = symbol.symstr;
+        tok.symid = symbol.symid;
+        printf("Interned symbol %s as %d\n", symbol.symstr, symbol.symid);
     }
     Token ret = state->nextToken;
     state->nextToken = tok;
     return ret;
 }
 
-LexState initLexerState(char *prog) {
+LexState initLexerState(VM *vm, char *prog) {
     LexState ret{};
     ret.prog = prog;
-    nextToken(&ret);
+    nextToken(vm, &ret);
     if (peekToken(&ret).type == T_EOF) {
         fprintf(stderr, "ERROR?: Empty 'files' are not legal\n");
         assert(false);
@@ -196,7 +214,7 @@ void parseList(VM *vm, LexState *lex, Handle parent);
 void parseExpr(VM *vm, LexState *lex, Handle parent) {
     //assert(getC(vm, parent).type == V_CONS_PAIR);
     //assert(getC(vm, parent).pair == 0);
-    Token tok = nextToken(lex);
+    Token tok = nextToken(vm, lex);
     switch (tok.type) {
         case T_DOUBLE: {
             allocPair(vm, parent);
@@ -215,8 +233,8 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
             getC(vm, parent).car.symid = tok.symid;
         } break;
         case T_LEFT_PAREN: {
+            allocPair(vm, parent);
             if (peekToken(lex).type != T_RIGHT_PAREN) {
-                allocPair(vm, parent);
                 getC(vm, parent).car.type = V_CONS_PAIR;
                 ConsPair *p = allocConsPair(vm);
                 getC(vm, parent).car.pair = p;
@@ -224,7 +242,7 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
                 parseList(vm, lex, car);
                 free(vm, car);
             }
-            nextToken(lex);
+            nextToken(vm, lex); // eat right parent
         } break;
         case T_RIGHT_PAREN: {
             fprintf(stderr, "ERROR: Mismatching parenthesis, more ) than (\n");
@@ -261,49 +279,23 @@ void parseList(VM *vm, LexState *lex, Handle parent) {
     free(vm, currParent);
 }
 
-void add(Object *o, int symid, Value v) {
-    o->table[symid] = v;
-}
-
-Value &get(Object *o, int symid) {
-    return o->table[symid];
-}
-
-bool keyExists(Object *o, int symid) {
-    return o->table.count(symid);
-}
-
-bool operator<(const Value a, const Value b) {
-    if (a.type != b.type) {
-        return a.type < b.type;
-    }
-    switch (a.type) {
-        case V_FUNCTION: {
-            return a.funcID < b.funcID;
-        } break;
-        case V_SYMBOL: {
-            return a.symid < b.symid;
-        } break;
-        case V_DOUBLE: {
-            return a.doub < b.doub;
-        } break;
-        case V_BOOLEAN: {
-            return !a.boolean && b.boolean;
-        } break;
-        default:assert(false);
-    }
-}
-
-size_t allocReg(Function *func) {
+Value allocReg(Function *func, bool global = false) {
     size_t reg = func->numRegs;
+    assert(reg <= UCHAR_MAX);
     func->numRegs++;
-    return reg;
+    Value ret{V_REG_OR_CONSTANT};
+    ret.regOrConstant = reg;
+    ret.global = global;
+    return ret;
 }
 
-size_t allocConstant(Function *func, Value val) {
+Value allocConstant(Function *func, Value val) {
     size_t k = size(&func->constants);
+    assert(k <= UCHAR_MAX);
     add(&func->constants, val);
-    return k;
+    Value ret{V_REG_OR_CONSTANT};
+    ret.regOrConstant = k;
+    return ret;
 }
 
 #define bitsize(o) (sizeof(o)*8)
@@ -378,11 +370,11 @@ struct ASTNode {
     ASTNode(ASTNodeType t, bool b) : type(t), hasReg(b) {}
     virtual void traverse() = 0;
     virtual void emit(VM *vm, size_t funcID,
-                      map<int, VarReg> *symToReg,
-                      map<Value, size_t> *valueToConstantSlot) = 0;
-    virtual size_t getRegister(VM *vm, size_t funcID,
-                               map<int, VarReg> *symToReg,
-                               map<Value, size_t> *valueToConstantSlot) = 0;
+                      Object *symToReg,
+                      Object *valueToConstantSlot) = 0;
+    virtual Value getRegister(VM *vm, size_t funcID,
+                              Object *symToReg,
+                              Object *valueToConstantSlot) = 0;
     //virtual size_t getConstantId(VM *vm, Function *func,
     //map<int, size_t> *symToReg) = 0;
 };
@@ -398,24 +390,24 @@ struct ASTBody : ASTNode {
     }
 
     virtual void emit(VM *vm, size_t funcID,
-                      map<int, VarReg> *symToReg,
-                      map<Value, size_t> *valueToConstantSlot) {
+                      Object *symToReg,
+                      Object *valueToConstantSlot) {
         for (size_t i = 0; i < size(&body); ++i) {
             body[i]->emit(vm, funcID, symToReg, valueToConstantSlot);
         }
         if (body[size(&body)-1]->hasReg) {
-            size_t retReg = body[size(&body)-1]->getRegister(vm, funcID,
-                                                             symToReg,
-                                                             valueToConstantSlot);
-            addR(&vm->funcs[funcID], OP_RETURN, retReg);
+            Value retReg = body[size(&body)-1]->getRegister(vm, funcID,
+                                                            symToReg,
+                                                            valueToConstantSlot);
+            addR(&vm->funcs[funcID], OP_RETURN, retReg.regOrConstant);
         } else {
             addN(&vm->funcs[funcID], OP_RETURN_UNDEF);
         }
     };
 
-    virtual size_t getRegister(VM *vm, size_t funcID,
-                               map<int, VarReg> *symToReg,
-                               map<Value, size_t> *valueToConstantSlot) {
+    virtual Value getRegister(VM *vm, size_t funcID,
+                              Object *symToReg,
+                              Object *valueToConstantSlot) {
         fprintf(stderr, "ICE: body does not have a register\n");
         assert(false);
     }
@@ -425,31 +417,32 @@ struct ASTSymbol : ASTNode {
     ASTSymbol() : ASTNode(ASTT_SYMBOL, true) {}
     char *str;
     int symid;
-    size_t reg;
+    Value reg;
     virtual void traverse() {
         printf("%s %d\n", str, symid);
     };
 
     virtual void emit(VM *vm, size_t funcID,
-                      map<int, VarReg> *symToReg,
-                      map<Value, size_t> *valueToConstantSlot) {
+                      Object *symToReg,
+                      Object *valueToConstantSlot) {
         Value v{V_SYMBOL};
         v.symid = symid;
         v.symstr = str;
-        size_t k;
-        if (valueToConstantSlot->count(v)) {
-            k = valueToConstantSlot->at(v);
+        Value k;
+        if (keyExists(valueToConstantSlot, v)) {
+            k = get(valueToConstantSlot, v);
         } else {
             k = allocConstant(&vm->funcs[funcID], v);
-            (*valueToConstantSlot)[v] = k;
+            add(vm, valueToConstantSlot, v, k);
         }
         reg = allocReg(&vm->funcs[funcID]);
-        addRI(&vm->funcs[funcID], OP_LOADK, reg, k);
+        addRI(&vm->funcs[funcID], OP_LOADK, reg.regOrConstant,
+              k.regOrConstant);
     }
 
-    virtual size_t getRegister(VM *vm, size_t funcID,
-                               map<int, VarReg> *symToReg,
-                               map<Value, size_t> *valueToConstantSlot) {
+    virtual Value getRegister(VM *vm, size_t funcID,
+                              Object *symToReg,
+                              Object *valueToConstantSlot) {
         return reg;
     }
 };
@@ -457,49 +450,51 @@ struct ASTSymbol : ASTNode {
 // Hmmmm since we have a register machine a-normal form
 // would be *very* good, or until then an enum would work.
 struct ASTVariable : ASTNode {
-    ASTVariable() : ASTNode(ASTT_VARIABLE, true) {}
-    ASTSymbol symbol;
+    ASTVariable() : ASTNode(ASTT_VARIABLE, true),
+                    symbol(Value{V_SYMBOL}) {}
+    Value symbol;
     virtual void traverse() {
-        printf("%s %d\n", symbol.str, symbol.symid);
+        printf("%s %d\n", symbol.symstr, symbol.symid);
     };
 
     virtual void emit(VM *vm, size_t funcID,
-                      map<int, VarReg> *symToReg,
-                      map<Value, size_t> *valueToConstantSlot) {
-        if (!symToReg->count(symbol.symid)) {
-            (*symToReg)[symbol.symid].reg = allocReg(&vm->funcs[funcID]);
+                      Object *symToReg,
+                      Object *valueToConstantSlot) {
+        if (!keyExists(symToReg, symbol)) {
+            add(vm, symToReg, symbol, allocReg(&vm->funcs[funcID], true));
         }
-        if ((*symToReg)[symbol.symid].global) {
-            size_t reg = (*symToReg)[symbol.symid].reg;
-            Value v{V_SYMBOL};
-            v.symid = symbol.symid;
-            v.symstr = symbol.str;
-            size_t k;
-            if (valueToConstantSlot->count(v)) {
-                k = valueToConstantSlot->at(v);
+        Value reg = get(symToReg, symbol);
+        if (reg.global) {
+            Value k;
+            if (keyExists(valueToConstantSlot, symbol)) {
+                k = get(valueToConstantSlot, symbol);
             } else {
-                k = allocConstant(&vm->funcs[funcID], v);
-                (*valueToConstantSlot)[v] = k;
+                k = allocConstant(&vm->funcs[funcID], symbol);
+                add(vm, valueToConstantSlot, symbol, k);
             }
-            addRI(&vm->funcs[funcID], OP_GET_GLOBAL, reg, k);
+            addRI(&vm->funcs[funcID], OP_GET_GLOBAL,
+                  reg.regOrConstant, k.regOrConstant);
         } else {
+            printf("NOOP ");
+            printValue(reg);
+            printf("\n");
+                
             // NOOP
         }
     }
 
     // Only (let var val) and arguments
     virtual void setRegister(VM *vm, size_t funcID,
-                             map<int, VarReg> *symToReg) {
-        assert(!symToReg->count(symbol.symid));
-        (*symToReg)[symbol.symid].reg = allocReg(&vm->funcs[funcID]);
-        (*symToReg)[symbol.symid].global = false;
+                             Object *symToReg) {
+        assert(!keyExists(symToReg, symbol));
+        add(vm, symToReg, symbol, allocReg(&vm->funcs[funcID]));
     }
 
-    virtual size_t getRegister(VM *vm, size_t funcID,
-                               map<int, VarReg> *symToReg,
-                               map<Value, size_t> *valueToConstantSlot) {
-        assert(symToReg->count(symbol.symid));
-        return (*symToReg)[symbol.symid].reg;
+    virtual Value getRegister(VM *vm, size_t funcID,
+                              Object *symToReg,
+                              Object *valueToConstantSlot) {
+        assert(keyExists(symToReg, symbol));
+        return get(symToReg, symbol);
     }
 };
 
@@ -515,16 +510,16 @@ struct ASTArgList : ASTNode {
     };
 
     virtual void emit(VM *vm, size_t funcID,
-                      map<int, VarReg> *symToReg,
-                      map<Value, size_t> *valueToConstantSlot) {
+                      Object *symToReg,
+                      Object *valueToConstantSlot) {
         for (size_t i = 0; i < size(&args); ++i) {
             args[i].setRegister(vm, funcID, symToReg);
         }
     }
 
-    virtual size_t getRegister(VM *vm, size_t funcID,
-                               map<int, VarReg> *symToReg,
-                               map<Value, size_t> *valueToConstantSlot) {
+    virtual Value getRegister(VM *vm, size_t funcID,
+                              Object *symToReg,
+                              Object *valueToConstantSlot) {
         fprintf(stderr, "ICE: argument list does not have a register\n");
         assert(false);
     }
@@ -534,7 +529,7 @@ struct ASTLambda : ASTNode {
     ASTLambda() : ASTNode(ASTT_LAMBDA, true) {}
     ASTArgList argList;
     ASTBody body;
-    size_t reg;
+    Value reg;
     virtual void traverse() {
         printf("Lambda (\n");
         argList.traverse();
@@ -543,25 +538,26 @@ struct ASTLambda : ASTNode {
     };
 
     virtual void emit(VM *vm, size_t funcID,
-                      map<int, VarReg> *symToReg,
-                      map<Value, size_t> *valueToConstantSlot) {
+                      Object *symToReg,
+                      Object *valueToConstantSlot) {
         // create new func and stuffs, add the new func to the
         // constant table(?), load the constant.
 
         size_t newFuncID = size(&vm->funcs);
         add(&vm->funcs, Function());
-        map<int, VarReg> newSymToReg;
-        map<Value, size_t> newValueToConstantSlot;
+        Object newSymToReg;
+        Object newValueToConstantSlot;
         argList.emit(vm, newFuncID, &newSymToReg,
                      &newValueToConstantSlot);
         body.emit(vm, newFuncID, &newSymToReg, &newValueToConstantSlot);
         reg = allocReg(&vm->funcs[funcID]);
-        addRI(&vm->funcs[funcID], OP_LOAD_FUNC, reg, newFuncID);
+        addRI(&vm->funcs[funcID], OP_LOAD_FUNC, reg.regOrConstant,
+              newFuncID);
     }
 
-    virtual size_t getRegister(VM *vm, size_t funcID,
-                               map<int, VarReg> *symToReg,
-                               map<Value, size_t> *valueToConstantSlot) {
+    virtual Value getRegister(VM *vm, size_t funcID,
+                              Object *symToReg,
+                              Object *valueToConstantSlot) {
         return reg;
     }
 };
@@ -570,7 +566,7 @@ struct ASTCall : ASTNode {
     ASTCall() : ASTNode(ASTT_CALL, true) {}
     ASTNode *callee;
     DynamicArray<ASTNode *> args;
-    size_t returnReg;
+    Value returnReg;
     virtual void traverse() {
         printf("Call (\n");
         callee->traverse();
@@ -581,30 +577,30 @@ struct ASTCall : ASTNode {
     }
 
     virtual void emit(VM *vm, size_t funcID,
-                      map<int, VarReg> *symToReg,
-                      map<Value, size_t> *valueToConstantSlot) {
+                      Object *symToReg,
+                      Object *valueToConstantSlot) {
         callee->emit(vm, funcID, symToReg, valueToConstantSlot);
-        size_t calleeReg = callee->getRegister(vm, funcID,
-                                               symToReg,
-                                               valueToConstantSlot);
-        DynamicArray<size_t> argRegs;
+        Value calleeReg = callee->getRegister(vm, funcID, symToReg,
+                                              valueToConstantSlot);
+        DynamicArray<Value> argRegs;
         for (size_t i = 0; i < size(&args); ++i) {
             args[i]->emit(vm, funcID, symToReg, valueToConstantSlot);
             add(&argRegs, args[i]->getRegister(vm, funcID,
                                                symToReg,
                                                valueToConstantSlot));
         }
-        addR(&vm->funcs[funcID], OP_SETUP_CALL, calleeReg);
+        addR(&vm->funcs[funcID], OP_SETUP_CALL, calleeReg.regOrConstant);
         for (size_t i = 0; i < size(&argRegs); ++i) {
-            addR(&vm->funcs[funcID], OP_PUSH_ARG, argRegs[i]);
+            addR(&vm->funcs[funcID], OP_PUSH_ARG,
+                 argRegs[i].regOrConstant);
         }
         returnReg = allocReg(&vm->funcs[funcID]);
-        addR(&vm->funcs[funcID], OP_CALL, returnReg);
+        addR(&vm->funcs[funcID], OP_CALL, returnReg.regOrConstant);
     }
 
-    virtual size_t getRegister(VM *vm, size_t funcID,
-                               map<int, VarReg> *symToReg,
-                               map<Value, size_t> *valueToConstantSlot) {
+    virtual Value getRegister(VM *vm, size_t funcID,
+                              Object *symToReg,
+                              Object *valueToConstantSlot) {
         return returnReg;
     }
 
@@ -613,30 +609,31 @@ struct ASTCall : ASTNode {
 struct ASTDouble : ASTNode {
     ASTDouble() : ASTNode(ASTT_DOUBLE, true) {}
     double value;
-    size_t reg;
+    Value reg;
     virtual void traverse() {
         printf("%f\n", value);
     }
 
     virtual void emit(VM *vm, size_t funcID,
-                      map<int, VarReg> *symToReg,
-                      map<Value, size_t> *valueToConstantSlot) {
+                      Object *symToReg,
+                      Object *valueToConstantSlot) {
         Value v{V_DOUBLE};
         v.doub = value;
-        size_t k;
-        if (valueToConstantSlot->count(v)) {
-            k = valueToConstantSlot->at(v);
+        Value k;
+        if (keyExists(valueToConstantSlot, v)) {
+            k = get(valueToConstantSlot, v);
         } else {
             k = allocConstant(&vm->funcs[funcID], v);
-            (*valueToConstantSlot)[v] = k;
+            add(vm, valueToConstantSlot, v, k);
         }
         reg = allocReg(&vm->funcs[funcID]);
-        addRI(&vm->funcs[funcID], OP_LOADK, reg, k);
+        addRI(&vm->funcs[funcID], OP_LOADK, reg.regOrConstant,
+              k.regOrConstant);
     }
 
-    virtual size_t getRegister(VM *vm, size_t funcID,
-                               map<int, VarReg> *symToReg,
-                               map<Value, size_t> *valueToConstantSlot) {
+    virtual Value getRegister(VM *vm, size_t funcID,
+                              Object *symToReg,
+                              Object *valueToConstantSlot) {
         return reg;
     }
 };
@@ -644,30 +641,31 @@ struct ASTDouble : ASTNode {
 struct ASTBoolean : ASTNode {
     ASTBoolean() : ASTNode(ASTT_BOOLEAN, true) {}
     bool value;
-    size_t reg;
+    Value reg;
     virtual void traverse() {
         printf("%s\n", value ? "true" : "false");
     }
 
     virtual void emit(VM *vm, size_t funcID,
-                      map<int, VarReg> *symToReg,
-                      map<Value, size_t> *valueToConstantSlot) {
+                      Object *symToReg,
+                      Object *valueToConstantSlot) {
         Value v{V_BOOLEAN};
         v.boolean = value;
-        size_t k;
-        if (valueToConstantSlot->count(v)) {
-            k = valueToConstantSlot->at(v);
+        Value k;
+        if (keyExists(valueToConstantSlot, v)) {
+            k = get(valueToConstantSlot, v);
         } else {
             k = allocConstant(&vm->funcs[funcID], v);
-            (*valueToConstantSlot)[v] = k;
+            add(vm, valueToConstantSlot, v, k);
         }
         reg = allocReg(&vm->funcs[funcID]);
-        addRI(&vm->funcs[funcID], OP_LOADK, reg, k);
+        addRI(&vm->funcs[funcID], OP_LOADK, reg.regOrConstant,
+              k.regOrConstant);
     }
 
-    virtual size_t getRegister(VM *vm, size_t funcID,
-                               map<int, VarReg> *symToReg,
-                               map<Value, size_t> *valueToConstantSlot) {
+    virtual Value getRegister(VM *vm, size_t funcID,
+                              Object *symToReg,
+                              Object *valueToConstantSlot) {
         return reg;
     }
 };
@@ -680,7 +678,7 @@ struct MakeObjectSlot {
 struct ASTMakeObject : ASTNode {
     ASTMakeObject() : ASTNode(ASTT_MAKE_OBJECT, true) {}
     DynamicArray<MakeObjectSlot> slots;
-    size_t reg;
+    Value reg;
     virtual void traverse() {
         printf("(make-object\n(\n");
         for (size_t i = 0; i < size(&slots); ++i) {
@@ -693,67 +691,106 @@ struct ASTMakeObject : ASTNode {
     }
 
     virtual void emit(VM *vm, size_t funcID,
-                      map<int, VarReg> *symToReg,
-                      map<Value, size_t> *valueToConstantSlot) {
+                      Object *symToReg,
+                      Object *valueToConstantSlot) {
         reg = allocReg(&vm->funcs[funcID]);
-        addR(&vm->funcs[funcID], OP_MAKE_OBJECT, reg);
+        addR(&vm->funcs[funcID], OP_MAKE_OBJECT, reg.regOrConstant);
         for (size_t i = 0; i < size(&slots); ++i) {
             slots[i].key->emit(vm, funcID, symToReg, valueToConstantSlot);
             slots[i].value->emit(vm, funcID, symToReg,
                                  valueToConstantSlot);
-            addRRR(&vm->funcs[funcID], OP_SET_OBJECT_SLOT, reg,
-                   slots[i].key->getRegister(vm, funcID,
-                                             symToReg,
-                                             valueToConstantSlot),
-                   slots[i].value->getRegister(vm, funcID,
-                                               symToReg,
-                                               valueToConstantSlot));
+            Value keyReg = slots[i].key->getRegister(vm, funcID,
+                                                     symToReg,
+                                                     valueToConstantSlot);
+            Value valueReg = slots[i].value->getRegister(vm, funcID,
+                                                         symToReg,
+                                                         valueToConstantSlot);
+            addRRR(&vm->funcs[funcID], OP_SET_OBJECT_SLOT,
+                   reg.regOrConstant,
+                   keyReg.regOrConstant,
+                   valueReg.regOrConstant);
         }
     }
 
-    virtual size_t getRegister(VM *vm, size_t funcID,
-                               map<int, VarReg> *symToReg,
-                               map<Value, size_t> *valueToConstantSlot) {
+    virtual Value getRegister(VM *vm, size_t funcID,
+                              Object *symToReg,
+                              Object *valueToConstantSlot) {
         return reg;
     }
 };
 
 struct ASTDefine : ASTNode {
-    ASTSymbol var;
+    Value var;
     ASTNode *expr;
-    ASTDefine() : ASTNode(ASTT_DEFINE, false) {}
+    ASTDefine() : ASTNode(ASTT_DEFINE, false), var(Value{V_SYMBOL}) {}
     virtual void traverse() {
         printf("(define\n");
-        var.traverse();
+        printValue(var);
+        printf("\n");
         expr->traverse();
         printf(")\n");
     }
+
     virtual void emit(VM *vm, size_t funcID,
-                      map<int, VarReg> *symToReg,
-                      map<Value, size_t> *valueToConstantSlot) {
+                      Object *symToReg,
+                      Object *valueToConstantSlot) {
         expr->emit(vm, funcID, symToReg, valueToConstantSlot);
-        Value v{V_SYMBOL};
-        v.symid = var.symid;
-        v.symstr = var.str;
-        size_t k;
-        if (valueToConstantSlot->count(v)) {
-            k = valueToConstantSlot->at(v);
+        Value k;
+        if (keyExists(valueToConstantSlot, var)) {
+            k = get(valueToConstantSlot, var);
         } else {
-            k = allocConstant(&vm->funcs[funcID], v);
-            (*valueToConstantSlot)[v] = k;
+            k = allocConstant(&vm->funcs[funcID], var);
+            add(vm, valueToConstantSlot, var, k);
         }
         addRI(&vm->funcs[funcID], OP_DEFINE_GLOBAL,
               expr->getRegister(vm, funcID, symToReg,
-                                valueToConstantSlot), k);
+                                valueToConstantSlot).regOrConstant,
+              k.regOrConstant);
     }
 
-    virtual size_t getRegister(VM *vm, size_t funcID,
-                               map<int, VarReg> *symToReg,
-                               map<Value, size_t> *valueToConstantSlot) {
+    virtual Value getRegister(VM *vm, size_t funcID,
+                              Object *symToReg,
+                              Object *valueToConstantSlot) {
         fprintf(stderr, "ERROR: define can't be used as an expression\n");
         assert(false);
     }
 };
+
+struct ArenaAllocator {
+    void *mem = 0;
+    const size_t size = 512; // TODO: Tune me!!!
+    size_t top = 0;
+    ArenaAllocator *next = 0;
+    ArenaAllocator *last = 0;
+};
+
+template <typename T>
+T *alloc(ArenaAllocator *arena) {
+    if (!arena->mem) {
+        arena->mem = malloc(arena->size);
+        arena->last = arena;
+    }
+    assert(sizeof(T) + sizeof(ArenaAllocator) < arena->size);
+    if (arena->last->top + sizeof(T) +
+        sizeof(ArenaAllocator) > arena->size) {
+        arena->last->next = alloc<ArenaAllocator>(arena);
+        arena->last = arena->last->next;
+    }
+    T *ret = new(((char *)arena->last->mem) + arena->last->top) T;
+    arena->last->top += sizeof(T);
+    return ret;
+}
+
+void freeArena(ArenaAllocator *arena) {
+    if (arena) {
+        freeArena(arena->next);
+        free(arena->mem);
+        arena->mem = 0;
+        arena->top = 0;
+        arena->next = 0;
+        arena->last = 0;
+    }
+}
 
 ASTSymbol symbolToAST(Value tree) {
     assert(tree.type == V_SYMBOL);
@@ -766,7 +803,7 @@ ASTSymbol symbolToAST(Value tree) {
 ASTVariable variableToAST(Value tree) {
     assert(tree.type == V_SYMBOL);
     ASTVariable ret;
-    ret.symbol = symbolToAST(tree);
+    ret.symbol = tree;
     return ret;
 }
 
@@ -785,7 +822,7 @@ ASTBoolean booleanToAST(Value tree) {
     return ret;
 }
 
-ASTNode *exprToAST(Value tree);
+ASTNode *exprToAST(ArenaAllocator *arena, Value tree);
 
 size_t length(Value v) {
     assert(v.type == V_CONS_PAIR);
@@ -798,18 +835,18 @@ size_t length(Value v) {
     return ret;
 }
 
-ASTCall callToAST(Value tree) {
+ASTCall callToAST(ArenaAllocator *arena, Value tree) {
     assert(tree.type == V_CONS_PAIR);
     ASTCall ret;
     if (length(tree) < 1) {
         fprintf(stderr, "ERROR: calling to nothing does not work!\n");
         assert(false);
     }
-    ret.callee = exprToAST(tree.pair->car);
+    ret.callee = exprToAST(arena, tree.pair->car);
     assert(tree.pair->cdr.type == V_CONS_PAIR);
     tree = tree.pair->cdr;
     while (tree.pair) {
-        add(&ret.args, exprToAST(tree.pair->car));
+        add(&ret.args, exprToAST(arena, tree.pair->car));
         tree = tree.pair->cdr;
     }
     return ret;
@@ -830,8 +867,9 @@ ASTArgList argListToAST(Value tree) {
     return ret;
 }
 
-ASTBody bodyToAST(Value tree);
+ASTBody bodyToAST(ArenaAllocator *arena, Value tree);
 
+// Fix me, Intern lambda, quote etc.
 #define parseTreeSymCmp(tree, str) (!strcmp((tree).symstr, str))
 
 #define firstInListIsType(tree, p_type) (((tree).pair &&               \
@@ -839,7 +877,7 @@ ASTBody bodyToAST(Value tree);
                                           (p_type)))
 
 
-ASTLambda lambdaToAST(Value tree) {
+ASTLambda lambdaToAST(ArenaAllocator *arena, Value tree) {
     assert(tree.type == V_CONS_PAIR);
     ASTLambda ret;
     if (length(tree) < 3) {
@@ -850,25 +888,25 @@ ASTLambda lambdaToAST(Value tree) {
     assert(parseTreeSymCmp(tree.pair->car, "lambda"));
     Value afterLambdaSym = tree.pair->cdr;
     ret.argList = argListToAST(afterLambdaSym.pair->car);
-    ret.body = bodyToAST(afterLambdaSym.pair->cdr);
+    ret.body = bodyToAST(arena, afterLambdaSym.pair->cdr);
     return ret;
 }
 
-ASTNode *quotedToAST(Value tree) {
+ASTNode *quotedToAST(ArenaAllocator *arena, Value tree) {
     ASTNode *ret = 0;
     switch (tree.type) {
         case V_DOUBLE: {
-            ASTDouble *c = new ASTDouble;
+            ASTDouble *c = alloc<ASTDouble>(arena);
             *c = doubleToAST(tree);
             ret = c;
         } break;
         case V_BOOLEAN: {
-            ASTBoolean *c = new ASTBoolean;
+            ASTBoolean *c = alloc<ASTBoolean>(arena);
             *c = booleanToAST(tree);
             ret = c;
         } break;
         case V_SYMBOL: {
-            ASTSymbol *c = new ASTSymbol;
+            ASTSymbol *c = alloc<ASTSymbol>(arena);
             *c = symbolToAST(tree);
             ret = c;
         } break;
@@ -880,18 +918,18 @@ ASTNode *quotedToAST(Value tree) {
     return ret;
 }
 
-MakeObjectSlot makeObjectSlot(Value tree) {
+MakeObjectSlot makeObjectSlot(ArenaAllocator *arena, Value tree) {
     MakeObjectSlot ret;
     if (tree.type != V_CONS_PAIR || length(tree) != 2) {
         fprintf(stderr, "ERROR: make-object's argument has to be an associative list\n");
         assert(false);
     }
-    ret.key = exprToAST(tree.pair->car);
-    ret.value = exprToAST(tree.pair->cdr.pair->car);
+    ret.key = exprToAST(arena, tree.pair->car);
+    ret.value = exprToAST(arena, tree.pair->cdr.pair->car);
     return ret;
 }
 
-ASTMakeObject makeObjectToAST(Value tree) {
+ASTMakeObject makeObjectToAST(ArenaAllocator *arena, Value tree) {
     ASTMakeObject ret;
     if (tree.type != V_CONS_PAIR) {
         fprintf(stderr, "ERROR: make-object's argument has to be an associative list\n");
@@ -899,12 +937,12 @@ ASTMakeObject makeObjectToAST(Value tree) {
     }
     resize(&ret.slots, length(tree));
     for (size_t i = 0; tree.pair; ++i, tree = tree.pair->cdr) {
-        ret.slots[i] = makeObjectSlot(tree.pair->car);
+        ret.slots[i] = makeObjectSlot(arena, tree.pair->car);
     }
     return ret;
 }
 
-ASTDefine defineToAST(Value tree) {
+ASTDefine defineToAST(ArenaAllocator *arena, Value tree) {
     ASTDefine ret;
     assert(tree.type == V_CONS_PAIR);
     assert(tree.pair);
@@ -914,34 +952,34 @@ ASTDefine defineToAST(Value tree) {
         fprintf(stderr, "ERROR: Can only define symbols as variables\n");
         assert(false);
     }
-    ret.var = symbolToAST(tree.pair->car);
-    ret.expr = exprToAST(tree.pair->cdr.pair->car);
+    ret.var = tree.pair->car;
+    ret.expr = exprToAST(arena, tree.pair->cdr.pair->car);
     return ret;
 }
 
-ASTNode *exprToAST(Value tree) {
+ASTNode *exprToAST(ArenaAllocator *arena, Value tree) {
     ASTNode *ret = 0;
     switch (tree.type) {
         case V_DOUBLE: {
-            ASTDouble *c = new ASTDouble;
+            ASTDouble *c = alloc<ASTDouble>(arena);
             *c = doubleToAST(tree);
             ret = c;
         } break;
         case V_BOOLEAN: {
-            ASTBoolean *c = new ASTBoolean;
+            ASTBoolean *c = alloc<ASTBoolean>(arena);
             *c = booleanToAST(tree);
             ret = c;
         } break;
         case V_SYMBOL: {
-            ASTVariable *c = new ASTVariable;
+            ASTVariable *c = alloc<ASTVariable>(arena);
             *c = variableToAST(tree);
             ret = c;
         } break;
         case V_CONS_PAIR: {
             if (firstInListIsType(tree, V_SYMBOL) &&
                        parseTreeSymCmp(tree.pair->car, "lambda")) {
-                ASTLambda *c = new ASTLambda;
-                *c = lambdaToAST(tree);
+                ASTLambda *c = alloc<ASTLambda>(arena);
+                *c = lambdaToAST(arena, tree);
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        parseTreeSymCmp(tree.pair->car, "define")) {
@@ -949,8 +987,8 @@ ASTNode *exprToAST(Value tree) {
                     fprintf(stderr, "ERROR: define takes two arguments!\n");
                     assert(false);
                 }
-                ASTDefine *c = new ASTDefine;
-                *c = defineToAST(tree.pair->cdr);
+                ASTDefine *c = alloc<ASTDefine>(arena);
+                *c = defineToAST(arena, tree.pair->cdr);
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        parseTreeSymCmp(tree.pair->car, "quote")) {
@@ -958,7 +996,7 @@ ASTNode *exprToAST(Value tree) {
                     fprintf(stderr, "ERROR: quote takes only one argument!\n");
                     assert(false);
                 }
-                ret = quotedToAST(at(tree, 1));
+                ret = quotedToAST(arena, at(tree, 1));
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        parseTreeSymCmp(tree.pair->car,
                                        "make-object")) {
@@ -966,12 +1004,12 @@ ASTNode *exprToAST(Value tree) {
                     fprintf(stderr, "ERROR: make-object takes only one argument!\n");
                     assert(false);
                 }
-                ASTMakeObject *c = new ASTMakeObject;
-                *c = makeObjectToAST(at(tree, 1));
+                ASTMakeObject *c = alloc<ASTMakeObject>(arena);
+                *c = makeObjectToAST(arena, at(tree, 1));
                 ret = c;
             } else {
-                ASTCall *c = new ASTCall;
-                *c = callToAST(tree);
+                ASTCall *c = alloc<ASTCall>(arena);
+                *c = callToAST(arena, tree);
                 ret = c;
             }
         } break;
@@ -983,12 +1021,12 @@ ASTNode *exprToAST(Value tree) {
     return ret;
 }
 
-ASTBody bodyToAST(Value tree) {
+ASTBody bodyToAST(ArenaAllocator *arena, Value tree) {
     assert(tree.type == V_CONS_PAIR);
     ASTBody ret;
     while (tree.pair) {
         assert(tree.type == V_CONS_PAIR);
-        add(&ret.body, exprToAST(tree.pair->car));
+        add(&ret.body, exprToAST(arena, tree.pair->car));
         tree = tree.pair->cdr;
     }
     return ret;
@@ -997,6 +1035,13 @@ ASTBody bodyToAST(Value tree) {
 // TODO: symid to symbol string
 void printValue(Value v) {
     switch(v.type) {
+        case V_REG_OR_CONSTANT: {
+            printf("<reg or constant: %d global: %s>",
+                   v.regOrConstant, v.global ? "true" : "false");
+        } break;
+        case V_STRING: {
+            printf("\"%s\"", v.str);
+        } break;
         case V_UNDEF: {
             printf("<undef>");
         } break;
@@ -1007,7 +1052,7 @@ void printValue(Value v) {
             printf("<func: %lx>", v.funcID);
         } break;
         case V_OBJECT: {
-            printf("<object: %p>", v.object);
+            printObject(v.object);
         } break;
         case V_CFUNCTION: {
             assert(false);
@@ -1102,22 +1147,24 @@ void printFuncCode(Function *func) {
 }
 
 void compileString(VM *vm, char *prog) {
-    LexState lex = initLexerState(prog);
-    map<int, VarReg> symToReg;
-    map<Value, size_t> valueToConstantSlot;
+    LexState lex = initLexerState(vm, prog);
+    Object symToReg;
+    Object valueToConstantSlot;
     size_t funcID = size(&vm->funcs);
     add(&vm->funcs, Function());
     ASTNode *node = 0;
+    ArenaAllocator arena;
     {
         ConsPair *root = allocConsPair(vm);
         Handle handle = reserve(vm, root);
         Handle currTree = handle;
         while (peekToken(&lex).type != T_EOF) {
+            freeArena(&arena);
             parseExpr(vm, &lex, currTree);
             printf("\n");
             printValue(getC(vm, currTree).car);
             printf("\n\n");
-            node = exprToAST(getC(vm, currTree).car);
+            node = exprToAST(&arena, getC(vm, currTree).car);
             node->traverse();
             node->emit(vm, funcID, &symToReg, &valueToConstantSlot);
             if (peekToken(&lex).type != T_EOF) {
@@ -1136,12 +1183,13 @@ void compileString(VM *vm, char *prog) {
         assert(false);
     }
     if (node->hasReg) {
-        size_t retReg = node->getRegister(vm, funcID, &symToReg,
-                                          &valueToConstantSlot);
-        addR(&vm->funcs[funcID], OP_RETURN, retReg);
+        Value retReg = node->getRegister(vm, funcID, &symToReg,
+                                         &valueToConstantSlot);
+        addR(&vm->funcs[funcID], OP_RETURN, retReg.regOrConstant);
     } else {
         addN(&vm->funcs[funcID], OP_RETURN_UNDEF);
     }
+    freeArena(&arena);
 }
 
 void compileFile(VM *vm, const char *path) {
@@ -1205,6 +1253,7 @@ Value runFunc(VM *vm, size_t frameID) {
                 caller->registers[frame->retReg] = frame->registers[reg];
                 frame = caller;
             } else {
+                popFrame(vm);
                 return frame->registers[reg];
             }
             popFrame(vm);
@@ -1215,6 +1264,7 @@ Value runFunc(VM *vm, size_t frameID) {
                 caller->registers[frame->retReg] = Value{V_UNDEF};
                 frame = caller;
             } else {
+                popFrame(vm);
                 return Value{V_UNDEF};
             }
             popFrame(vm);
@@ -1257,7 +1307,7 @@ Value runFunc(VM *vm, size_t frameID) {
                 assert(false);
             }
             Value val = frame->registers[valReg];
-            add(obj.object, key.symid, val);
+            add(vm, obj.object, key, val);
             frame->pc++;
         } break;
         case OP_DEFINE_GLOBAL: {
@@ -1268,7 +1318,7 @@ Value runFunc(VM *vm, size_t frameID) {
                 assert(false);
             }
 
-            add(&vm->globals, frame->func->constants[k].symid, 
+            add(vm, &vm->globals, frame->func->constants[k], 
                 frame->registers[reg]); 
             frame->pc++;
         } break;
@@ -1280,7 +1330,7 @@ Value runFunc(VM *vm, size_t frameID) {
                 assert(false);
             }
             frame->registers[reg] = get(&vm->globals,
-                                        frame->func->constants[k].symid);
+                                        frame->func->constants[k]);
             frame->pc++;
         } break;
         default: {
@@ -1366,25 +1416,31 @@ Value peek(VM *vm, int idx) {
     }
 }
 
-void getGlobal(VM *vm, int symid) {
-    add(&vm->apiStack, get(&vm->globals, symid));
+void getGlobal(VM *vm, Value variable) {
+    assert(variable.type == V_SYMBOL);
+    add(&vm->apiStack, get(&vm->globals, variable));
 }
 
 int main(int argc, char *argv[]) {
     VM vm;
     compileFile(&vm, "./basic.lsp");
-    for (size_t i = 0; i < size(&vm.funcs); ++i) {
-        printf("\nFUNC: %lu\n", i);
-        printFuncCode(&vm.funcs[i]);
-    }
+        for (size_t i = 0; i < size(&vm.funcs); ++i) {
+            printf("\nFUNC: %lu\n", i);
+            printFuncCode(&vm.funcs[i]);
+        }
     printf("\nRUNNING:\n");
-    {
+    for (int i = 0; i < 100; ++i) {
         Value f = {V_FUNCTION};
         f.funcID = 0;
         pushValue(&vm, f);
+        call(&vm, 0);
+        getGlobal(&vm, intern(&vm, "testFunc"));
+        call(&vm, 0);
+        //getGlobal(&vm, 1);
+        printValue(peek(&vm, -1));
+        clearStack(&vm);
+        printf("\n");
     }
-    call(&vm, 0);
-    //getGlobal(&vm, 1);
-    printValue(peek(&vm, -1));
-    printf("\n");
+    freeVM(&vm);
+    
 }
