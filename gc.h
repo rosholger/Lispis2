@@ -24,6 +24,9 @@ enum GCObjectType {
     GC_CONS_PAIR,
     GC_OBJECT,
     GC_STRING,
+    //GC_FUNCTION_PROTOTYPE,
+    GC_FUNCTION,
+    GC_UPVALUE,
     GC_BROKEN_HEART,
 };
 

@@ -21,6 +21,7 @@ OpCodeType opCodeTypes[] = {
     OT_RI, // DEFINE_GLOBAL
     OT_RI, // GET_GLOBAL
     OT_N,  // RETURN_UNDEF
+    OT_RI,  // GET_UPVALUE
 };
 
 #define OPCODE(op) #op,
@@ -29,12 +30,12 @@ const char *opCodeStr[] = {
 };
 #undef OPCODE
 
-Object::Object() : gcObj(GCObject{GC_OBJECT}) {
+Object::Object() : gcObj(GCObject{{GC_OBJECT}}) {
     resize(&slots, 1);
     slots[0].key.type = V_UNDEF;
 }
 
-ConsPair::ConsPair() : gcObj(GCObject{GC_CONS_PAIR}) {}
+ConsPair::ConsPair() : gcObj(GCObject{{GC_CONS_PAIR}}) {}
 
 Value::Value() : type(V_UNDEF) {
     //Null value
@@ -47,6 +48,11 @@ Value::Value(ValueType t) : type(t) {
     opaqueType = 0;
     opaque = 0;
 }
+
+Upvalue::Upvalue() : gcObj(GCObject{{GC_UPVALUE}}),
+                     value(0),
+                     closed(V_UNDEF),
+                     next(0) {}
 
 Value at(Value v, size_t idx) {
     Value ret = v;
@@ -93,6 +99,7 @@ GCObject *copyFromTo(VM *vm, GCObject *obj, size_t size) {
     memset(obj, 0, size);
     assert(ret->type <= GC_BROKEN_HEART);
     obj->type = GC_BROKEN_HEART;
+    //printf("move 0x%p to 0x%p\n", obj, ret);
     obj++;
     GCObject **bh = (GCObject **)obj;
     *bh = ret;
@@ -129,6 +136,14 @@ void visitValue(VM *vm, Value *v) {
                 assert(v->pair->gcObj.type <= GC_BROKEN_HEART);
             }
         } break;
+        case V_FUNCTION: {
+            if (v->func->gcObj.type == GC_BROKEN_HEART) {
+                v->func = *(Function **)((&v->func->gcObj)+1);
+            } else {
+                v->func = (Function *)copyFromTo(vm, &v->func->gcObj,
+                                                 sizeof(Function));
+            }
+        } break;
             /*
         case V_STRING: {
             if (v->str->gcObj.type == GC_BROKEN_HEART) {
@@ -144,12 +159,33 @@ void visitValue(VM *vm, Value *v) {
     }
 }
 
+Upvalue *visitUpvalue(VM *vm, Upvalue *upvalue) {
+    if (upvalue->gcObj.type == GC_BROKEN_HEART) {
+        Upvalue *ret = *(Upvalue **)((&upvalue->gcObj)+1);
+        return ret;
+    } else {
+        bool shouldMoveValuePtr = (((size_t)upvalue->value) ==
+                                   ((size_t)&upvalue->closed));
+        Upvalue *ret = (Upvalue *)copyFromTo(vm, &upvalue->gcObj,
+                                             sizeof(Upvalue));
+        if (shouldMoveValuePtr) {
+            ret->value = &ret->closed;
+        }
+        return ret;
+    }
+}
+
 // TODO: remove iterator stuff
 void visitObject(VM *vm, GCObject *o) {
     if (o->type >= GC_BROKEN_HEART) {
         assert(false);
     }
     switch (o->type) {
+        case GC_UPVALUE: {
+            Upvalue *upvalue = (Upvalue *)o;
+            visitValue(vm, &upvalue->closed);
+            vm->gc.nextToExamine += sizeof(Upvalue);
+        } break;
         case GC_OBJECT: {
             Object *obj = (Object *)o;
             for (size_t i = 0; i < size(&obj->slots); ++i) {
@@ -164,8 +200,16 @@ void visitObject(VM *vm, GCObject *o) {
             visitValue(vm, &c->cdr);
             vm->gc.nextToExamine += sizeof(ConsPair);
         } break;
-        case GC_STRING: break;
-        default:assert(false);
+        case GC_FUNCTION: {
+            Function *func = (Function *)o;
+            for (size_t i = 0; i < size(&func->upvalues); ++i) {
+                func->upvalues[i] = visitUpvalue(vm, func->upvalues[i]);
+            }
+            vm->gc.nextToExamine += sizeof(Function);
+            //Nothing to do yet?
+        } break;
+        case GC_STRING:
+        case GC_BROKEN_HEART: assert(false);
     }
 }
 
@@ -201,23 +245,57 @@ void collect(VM *vm) {
                         vm->handles[i] = copyFromTo(vm, vm->handles[i],
                                                     sizeof(ConsPair));
                     } break;
-                    default:assert(false);
+                    case GC_FUNCTION: {
+                        vm->handles[i] = copyFromTo(vm, vm->handles[i],
+                                                    sizeof(Function));
+                    } break;
+                    case GC_UPVALUE:
+                    case GC_STRING:
+                    case GC_BROKEN_HEART:
+                        assert(false);
                 }
             }
             assert(vm->handles[i]->type < GC_BROKEN_HEART);
         }
     }
     for (size_t i = 0; i < vm->frameStackTop; ++i) {
+        if (vm->frameStack[i].func->gcObj.type == GC_BROKEN_HEART) {
+            vm->frameStack[i].func =
+                *(Function **)((&vm->frameStack[i].func->gcObj)+1);
+        } else {
+            vm->frameStack[i].func =
+                (Function *)copyFromTo(vm, &vm->frameStack[i].func->gcObj,
+                                       sizeof(Function));
+        }
         for (size_t j = 0; j < size(&vm->frameStack[i].registers);
              ++j) {
             visitValue(vm, &vm->frameStack[i].registers[j]);
         }
     }
+    for (size_t i = 0; i < size(&vm->globals.slots); ++i) {
+        visitValue(vm, &vm->globals.slots[i].key); // Might not be needed
+        visitValue(vm, &vm->globals.slots[i].value);
+    }
+    if (vm->globals.parent) {
+        fprintf(stderr, "The globals table can not yet have a parent :(\n");
+        assert(false);
+    }
     while(vm->gc.nextToExamine != vm->gc.nextFree) {
         GCObject *val = (GCObject *)(vm->gc.toSpace + vm->gc.nextToExamine);
-        assert(val->type <= GC_BROKEN_HEART);
+        assert(val->type < GC_BROKEN_HEART);
         visitObject(vm, val);
     }
+
+    if (vm->openUpvalueHead) {
+        assert(vm->openUpvalueHead->gcObj.type == GC_BROKEN_HEART);
+        vm->openUpvalueHead = visitUpvalue(vm, vm->openUpvalueHead);
+        Upvalue *u = vm->openUpvalueHead;
+        while (u) {
+            u->next = visitUpvalue(vm, u->next);
+            u = u->next;
+        }
+    }
+    
     munmap(vm->gc.fromSpace, vm->gc.fromSpaceSize);
     size_t numberOfFreedBytes = (numberOfAllocatedBytes -
                                  vm->gc.nextFree);
@@ -289,6 +367,12 @@ Object &getO(VM *vm, Handle handle) {
     return *((Object *)vm->handles[handle.handle]);
 }
 
+GCObjectType type(VM *vm, Handle handle) {
+    assert(vm->handles[handle.handle]);
+    assert(vm->handles[handle.handle]->type != GC_BROKEN_HEART);
+    return vm->handles[handle.handle]->type;
+}
+
 ConsPair *allocConsPair(VM *vm) {
     ConsPair *ret = (ConsPair *)alloc(vm, sizeof(ConsPair));
     *ret = ConsPair();
@@ -298,6 +382,23 @@ ConsPair *allocConsPair(VM *vm) {
 Object *allocObject(VM *vm) {
     Object *ret = (Object *)alloc(vm, sizeof(Object));
     *ret = Object();
+    return ret;
+}
+
+Function *allocFunction(VM *vm, FunctionPrototype *prototype) {
+    Function *ret = (Function *)alloc(vm, sizeof(Function));
+    *ret = Function();
+    ret->gcObj.type = GC_FUNCTION;
+    ret->prototype = prototype;
+    resize(&ret->upvalues, size(&prototype->upvalues), (Upvalue *)0);
+    return ret;
+}
+
+Upvalue *allocUpvalue(VM *vm) {
+    Upvalue *ret = (Upvalue *)alloc(vm, sizeof(Upvalue));
+    *ret = Upvalue();
+    ret->next = vm->openUpvalueHead;
+    vm->openUpvalueHead = ret;
     return ret;
 }
 
@@ -340,7 +441,7 @@ static inline uint32_t hashString(char *string)
 static inline uint32_t hashValue(Value v) {
     switch (v.type) {
         case V_SYMBOL: {
-            return v.symid;
+            return v.sym.id;
         } break;
         case V_STRING: {
             return hashString(v.str);
@@ -348,8 +449,11 @@ static inline uint32_t hashValue(Value v) {
         case V_DOUBLE: {
             return hashDouble(v.doub);
         } break;
+        case V_BOOLEAN: {
+            return v.boolean;
+        } break;
         default: {
-            fprintf(stderr, "Can only hash strings, symbols and doubles\n");
+            fprintf(stderr, "Can only hash strings, symbols, bools and doubles\n");
             assert(false);
         } break;
     }
@@ -429,14 +533,19 @@ Value *getSlot(Object *o, Value key) {
         // In secondary position
         return &o->slots[nextIdx(mainIdx)].value;
     } else {
-        // Not present
-        return 0;
+        if (o->parent) {
+            // Maybe in parent?
+            return getSlot(o->parent, key);
+        } else {
+            // Not present
+            return 0;
+        }
     }
 }
 
 void insertSlot(VM *vm, Object *o, Value key, Value value) {
     assert(key.type == V_STRING || key.type == V_SYMBOL ||
-           key.type == V_DOUBLE);
+           key.type == V_DOUBLE || key.type == V_BOOLEAN);
     Value *p = getSlot(o, key);
     if (p) {
         *p = value;
@@ -459,7 +568,7 @@ static void resizeObject(VM *vm, Object *o, size_t newSize) {
     }
 }
 
-void add(VM *vm, Object *o, Value key, Value value) {
+void set(VM *vm, Object *o, Value key, Value value) {
     insertSlot(vm, o, key, value);
 }
 
@@ -484,4 +593,108 @@ void clear(Object *obj) {
 void freeVM(VM *vm) {
     munmap(vm->gc.toSpace, vm->gc.toSpaceSize);
     munmap(vm->gc.fromSpace, vm->gc.fromSpaceSize);
+}
+
+void getGlobal(VM *vm, Symbol variable) {
+    Value v = {V_SYMBOL};
+    v.sym = variable;
+    add(&vm->apiStack, get(&vm->globals, v));
+}
+
+void setGlobal(VM *vm, Symbol variable) {
+    Value value = pop(vm);
+    Value v = {V_SYMBOL};
+    v.sym = variable;
+    set(vm, &vm->globals, v, value);
+}
+
+Value peek(VM *vm, int idx) {
+    if (idx < 1) {
+        idx = size(&vm->apiStack) + idx;
+        return vm->apiStack[idx];
+    } else {
+        return vm->apiStack[idx];
+    }
+}
+
+Value pop(VM *vm) {
+    return pop(&vm->apiStack);
+}
+
+void pushValue(VM *vm, Value v) {
+    add(&vm->apiStack, v);
+}
+
+void pushDouble(VM *vm, double doub) {
+    Value v{V_DOUBLE};
+    v.doub = doub;
+    pushValue(vm, v);
+}
+
+void pushSymbol(VM *vm, char *symstr) {
+    Value v = {V_SYMBOL};
+    v.sym = intern(vm, symstr);
+    pushValue(vm, v);
+}
+
+void pushSymbol(VM *vm, Symbol symbol) {
+    Value v = {V_SYMBOL};
+    v.sym = symbol;
+    pushValue(vm, v);
+}
+
+void pushString(VM *vm, char *str) {
+    Value v{V_STRING};
+    v.str = strdup(str); // LEAK!!!
+    pushValue(vm, v);
+}
+
+void pushBoolean(VM *vm, bool boolean) {
+    Value v{V_BOOLEAN};
+    v.boolean = boolean;
+    pushValue(vm, v);
+}
+
+void pushOpaque(VM *vm, void *opaque, uint64 type) {
+    Value v{V_OPAQUE_POINTER};
+    v.opaque = opaque;
+    v.opaqueType = type;
+    pushValue(vm, v);
+}
+
+void pushHandle(VM *vm, Handle handle) {
+    Value v = {V_UNDEF};
+    switch (type(vm, handle)) {
+        case GC_OBJECT: {
+            v.type = V_OBJECT;
+            v.object = &getO(vm, handle);
+        } break;
+        case GC_CONS_PAIR: {
+            v.type = V_CONS_PAIR;
+            v.pair = &getC(vm, handle);
+        } break;
+        default:assert(false);
+    }
+    pushValue(vm, v);
+}
+
+Symbol intern(VM *vm, const char *str) {
+    Value vStr{V_STRING};
+    // unsafe, so take care
+    vStr.str = (char *)str;
+    Symbol symbol;
+    if (keyExists(&vm->symbolTable, vStr)) {
+        symbol = get(&vm->symbolTable, vStr).sym;
+    } else {
+        // WARNING!! Leaking!!
+        Value s = vStr;
+        s.str = strdup(str);
+        symbol.str = s.str;
+        symbol.id = vm->symbolIdTop;
+        vm->symbolIdTop++;
+        Value v = {V_SYMBOL};
+        v.sym = symbol;
+        set(vm, &vm->symbolTable, s, v);
+    }
+    return symbol;
 }

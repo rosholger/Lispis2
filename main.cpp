@@ -83,25 +83,6 @@ void printObject(Object *obj) {
     printf("}");
 }
 
-Value intern(VM *vm, const char *str) {
-    Value vStr{V_STRING};
-    // unsafe, so take care
-    vStr.str = (char *)str;
-    Value symbol{V_SYMBOL};
-    if (keyExists(&vm->symbolTable, vStr)) {
-        symbol = get(&vm->symbolTable, vStr);
-    } else {
-        // WARNING!! Leaking!!
-        Value s = vStr;
-        s.str = strdup(str);
-        symbol.symstr = s.str;
-        symbol.symid = vm->symbolIdTop;
-        vm->symbolIdTop++;
-        add(vm, &vm->symbolTable, s, symbol);
-    }
-    return symbol;
-}
-
 Token nextToken(VM *vm, LexState *state) {
     eatWhiteSpace(state);
     size_t tokStart = state->pos;
@@ -180,10 +161,10 @@ Token nextToken(VM *vm, LexState *state) {
         assert(tokLength < 99);
         memcpy(temp_str, state->prog+tokStart, tokLength);
         temp_str[tokLength] = 0;
-        Value symbol = intern(vm, temp_str);
-        tok.symstr = symbol.symstr;
-        tok.symid = symbol.symid;
-        printf("Interned symbol %s as %d\n", symbol.symstr, symbol.symid);
+        Symbol symbol = intern(vm, temp_str);
+        tok.symstr = symbol.str;
+        tok.symid = symbol.id;
+        printf("Interned symbol %s as %d\n", symbol.str, symbol.id);
     }
     Token ret = state->nextToken;
     state->nextToken = tok;
@@ -216,6 +197,10 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
     //assert(getC(vm, parent).pair == 0);
     Token tok = nextToken(vm, lex);
     switch (tok.type) {
+        case T_ERROR: {
+            fprintf(stderr, "ERROR: '%.*s'\n", (int)tok.length, tok.str);
+            assert(false);
+        } break;
         case T_DOUBLE: {
             allocPair(vm, parent);
             getC(vm, parent).car.type = V_DOUBLE;
@@ -229,8 +214,8 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
         case T_SYMBOL: {
             allocPair(vm, parent);
             getC(vm, parent).car.type = V_SYMBOL;
-            getC(vm, parent).car.symstr = tok.symstr;
-            getC(vm, parent).car.symid = tok.symid;
+            getC(vm, parent).car.sym.str = tok.symstr;
+            getC(vm, parent).car.sym.id = tok.symid;
         } break;
         case T_LEFT_PAREN: {
             allocPair(vm, parent);
@@ -279,17 +264,17 @@ void parseList(VM *vm, LexState *lex, Handle parent) {
     free(vm, currParent);
 }
 
-Value allocReg(Function *func, bool global = false) {
+Value allocReg(FunctionPrototype *func, bool nonLocal = false) {
     size_t reg = func->numRegs;
     assert(reg <= UCHAR_MAX);
     func->numRegs++;
     Value ret{V_REG_OR_CONSTANT};
     ret.regOrConstant = reg;
-    ret.global = global;
+    ret.nonLocal = nonLocal;
     return ret;
 }
 
-Value allocConstant(Function *func, Value val) {
+Value allocConstant(FunctionPrototype *func, Value val) {
     size_t k = size(&func->constants);
     assert(k <= UCHAR_MAX);
     add(&func->constants, val);
@@ -300,7 +285,8 @@ Value allocConstant(Function *func, Value val) {
 
 #define bitsize(o) (sizeof(o)*8)
 
-void addRRR(Function *func, OpCode op, uint8 a, uint8 b, uint8 c) {
+void addRRR(FunctionPrototype *func, OpCode op,
+            uint8 a, uint8 b, uint8 c) {
     OpCode assembledOp = (OpCode)((op << (bitsize(OpCode) -
                                           bitsize(uint8))) |
                                   (((OpCode)(a)) << (bitsize(OpCode) -
@@ -312,7 +298,7 @@ void addRRR(Function *func, OpCode op, uint8 a, uint8 b, uint8 c) {
     add(&func->code, assembledOp);
 }
 
-void addRI(Function *func, OpCode op, uint8 reg, uint32 immediateID) {
+void addRI(FunctionPrototype *func, OpCode op, uint8 reg, uint32 immediateID) {
     OpCode assembledOp = (OpCode)((op << (bitsize(OpCode) -
                                           bitsize(uint8))) |
                                   (((OpCode)(reg)) << (bitsize(OpCode) -
@@ -321,7 +307,14 @@ void addRI(Function *func, OpCode op, uint8 reg, uint32 immediateID) {
     add(&func->code, assembledOp);
 }
 
-void addRR(Function *func, OpCode op, uint8 a, uint8 b) {
+void addI(FunctionPrototype *func, OpCode op, uint32 immediateID) {
+    OpCode assembledOp = (OpCode)((op << (bitsize(OpCode) -
+                                          bitsize(uint8))) |
+                                  immediateID);
+    add(&func->code, assembledOp);
+}
+
+void addRR(FunctionPrototype *func, OpCode op, uint8 a, uint8 b) {
     OpCode assembledOp = (OpCode)((op << (bitsize(OpCode) -
                                           bitsize(uint8))) |
                                   (((OpCode)(a)) << (bitsize(OpCode) -
@@ -331,7 +324,7 @@ void addRR(Function *func, OpCode op, uint8 a, uint8 b) {
     add(&func->code, assembledOp);
 }
 
-void addR(Function *func, OpCode op, uint8 reg) {
+void addR(FunctionPrototype *func, OpCode op, uint8 reg) {
     OpCode assembledOp = (OpCode)((op << (bitsize(OpCode) -
                                           bitsize(uint8))) |
                                   (((OpCode)(reg)) << (bitsize(OpCode) -
@@ -339,7 +332,7 @@ void addR(Function *func, OpCode op, uint8 reg) {
     add(&func->code, assembledOp);
 }
 
-void addN(Function *func, OpCode op) {
+void addN(FunctionPrototype *func, OpCode op) {
     OpCode assembledOp = (OpCode)((op << (bitsize(OpCode) -
                                           bitsize(uint8))));
     add(&func->code, assembledOp);
@@ -360,8 +353,14 @@ enum ASTNodeType {
 };
 
 struct VarReg {
-    bool global = true;
+    bool nonLocal = true;
     size_t reg;
+};
+
+struct Scope {
+    size_t protoID;
+    Scope *parent;
+    Object *symToReg;
 };
 
 struct ASTNode {
@@ -369,11 +368,9 @@ struct ASTNode {
     bool hasReg;
     ASTNode(ASTNodeType t, bool b) : type(t), hasReg(b) {}
     virtual void traverse() = 0;
-    virtual void emit(VM *vm, size_t funcID,
-                      Object *symToReg,
+    virtual void emit(VM *vm, Scope scope,
                       Object *valueToConstantSlot) = 0;
-    virtual Value getRegister(VM *vm, size_t funcID,
-                              Object *symToReg,
+    virtual Value getRegister(VM *vm, Scope scope,
                               Object *valueToConstantSlot) = 0;
     //virtual size_t getConstantId(VM *vm, Function *func,
     //map<int, size_t> *symToReg) = 0;
@@ -389,24 +386,23 @@ struct ASTBody : ASTNode {
         }
     }
 
-    virtual void emit(VM *vm, size_t funcID,
-                      Object *symToReg,
+    virtual void emit(VM *vm, Scope scope,
                       Object *valueToConstantSlot) {
         for (size_t i = 0; i < size(&body); ++i) {
-            body[i]->emit(vm, funcID, symToReg, valueToConstantSlot);
+            body[i]->emit(vm, scope, valueToConstantSlot);
         }
         if (body[size(&body)-1]->hasReg) {
-            Value retReg = body[size(&body)-1]->getRegister(vm, funcID,
-                                                            symToReg,
-                                                            valueToConstantSlot);
-            addR(&vm->funcs[funcID], OP_RETURN, retReg.regOrConstant);
+            Value retReg =
+                body[size(&body)-1]->getRegister(vm, scope,
+                                                 valueToConstantSlot);
+            addR(&vm->funcProtos[scope.protoID],
+                 OP_RETURN, retReg.regOrConstant);
         } else {
-            addN(&vm->funcs[funcID], OP_RETURN_UNDEF);
+            addN(&vm->funcProtos[scope.protoID], OP_RETURN_UNDEF);
         }
     };
 
-    virtual Value getRegister(VM *vm, size_t funcID,
-                              Object *symToReg,
+    virtual Value getRegister(VM *vm, Scope scope,
                               Object *valueToConstantSlot) {
         fprintf(stderr, "ICE: body does not have a register\n");
         assert(false);
@@ -422,30 +418,77 @@ struct ASTSymbol : ASTNode {
         printf("%s %d\n", str, symid);
     };
 
-    virtual void emit(VM *vm, size_t funcID,
-                      Object *symToReg,
+    virtual void emit(VM *vm, Scope scope,
                       Object *valueToConstantSlot) {
         Value v{V_SYMBOL};
-        v.symid = symid;
-        v.symstr = str;
+        v.sym.id = symid;
+        v.sym.str = str;
         Value k;
         if (keyExists(valueToConstantSlot, v)) {
             k = get(valueToConstantSlot, v);
         } else {
-            k = allocConstant(&vm->funcs[funcID], v);
-            add(vm, valueToConstantSlot, v, k);
+            k = allocConstant(&vm->funcProtos[scope.protoID], v);
+            set(vm, valueToConstantSlot, v, k);
         }
-        reg = allocReg(&vm->funcs[funcID]);
-        addRI(&vm->funcs[funcID], OP_LOADK, reg.regOrConstant,
+        reg = allocReg(&vm->funcProtos[scope.protoID]);
+        addRI(&vm->funcProtos[scope.protoID], OP_LOADK, reg.regOrConstant,
               k.regOrConstant);
     }
 
-    virtual Value getRegister(VM *vm, size_t funcID,
-                              Object *symToReg,
+    virtual Value getRegister(VM *vm, Scope scope,
                               Object *valueToConstantSlot) {
         return reg;
     }
 };
+
+bool getUpvalue(VM *vm, Scope scope, Value variable, uint8 *upvalueIdx) {
+    bool found = false;
+    DynamicArray<Scope *> scopes;
+    uint8 retUpvalueIdx;
+    Scope *currScope = &scope;
+    while (!found && currScope) {
+        FunctionPrototype *proto = &vm->funcProtos[currScope->protoID];
+        for (size_t i = 0; i < size(&proto->upvalues); ++i) {
+            if (proto->upvalues[i].variable.id == variable.sym.id) {
+                retUpvalueIdx = i;
+                found = true;
+            }
+        }
+        if (!found) {
+            if(currScope->parent &&
+               keyExists(currScope->parent->symToReg, variable)) {
+                found = true;
+                uint8 reg = get(currScope->parent->symToReg,
+                                variable).regOrConstant;
+                retUpvalueIdx = size(&proto->upvalues);
+                add(&proto->upvalues,
+                    UpvalueDesc({variable.sym, true,
+                                reg}));
+            } else {
+                add(&scopes, currScope);
+                currScope = currScope->parent;
+            }
+        }
+    }
+    if (found) {
+        if (size(&scopes) >= 1) {
+            // Safe since we know that size(&scopes) >= 1 and 1-1 == 0
+            for (size_t i = size(&scopes)-1;
+                 i >= 0; // Since we add an upvalue to i-1
+                 --i) {
+                FunctionPrototype *proto =
+                    &vm->funcProtos[scopes[i]->protoID];
+                uint8 newUpvalueIdx = (uint8)size(&proto->upvalues);
+                add(&proto->upvalues,
+                    UpvalueDesc({variable.sym, false, retUpvalueIdx}));
+                retUpvalueIdx = newUpvalueIdx;
+            }
+        }
+        *upvalueIdx = retUpvalueIdx;
+        return true;
+    }
+    return false;
+}
 
 // Hmmmm since we have a register machine a-normal form
 // would be *very* good, or until then an enum would work.
@@ -453,29 +496,37 @@ struct ASTVariable : ASTNode {
     ASTVariable() : ASTNode(ASTT_VARIABLE, true),
                     symbol(Value{V_SYMBOL}) {}
     Value symbol;
+    bool upvalue;
     virtual void traverse() {
-        printf("%s %d\n", symbol.symstr, symbol.symid);
+        printf("%s %d\n", symbol.sym.str, symbol.sym.id);
     };
 
-    virtual void emit(VM *vm, size_t funcID,
-                      Object *symToReg,
+    virtual void emit(VM *vm, Scope scope,
                       Object *valueToConstantSlot) {
-        if (!keyExists(symToReg, symbol)) {
-            add(vm, symToReg, symbol, allocReg(&vm->funcs[funcID], true));
+        if (!keyExists(scope.symToReg, symbol)) {
+            set(vm, scope.symToReg, symbol,
+                allocReg(&vm->funcProtos[scope.protoID], true));
         }
-        Value reg = get(symToReg, symbol);
-        if (reg.global) {
-            Value k;
-            if (keyExists(valueToConstantSlot, symbol)) {
-                k = get(valueToConstantSlot, symbol);
+        Value reg = get(scope.symToReg, symbol);
+        if (reg.nonLocal) {
+            uint8 upvalueIdx;
+            if (getUpvalue(vm, scope, symbol, &upvalueIdx)) {
+                addRI(&vm->funcProtos[scope.protoID], OP_GET_UPVALUE,
+                      reg.regOrConstant, upvalueIdx);
             } else {
-                k = allocConstant(&vm->funcs[funcID], symbol);
-                add(vm, valueToConstantSlot, symbol, k);
+                Value k;
+                if (keyExists(valueToConstantSlot, symbol)) {
+                    k = get(valueToConstantSlot, symbol);
+                } else {
+                    k = allocConstant(&vm->funcProtos[scope.protoID],
+                                      symbol);
+                    set(vm, valueToConstantSlot, symbol, k);
+                }
+                addRI(&vm->funcProtos[scope.protoID], OP_GET_GLOBAL,
+                      reg.regOrConstant, k.regOrConstant);
             }
-            addRI(&vm->funcs[funcID], OP_GET_GLOBAL,
-                  reg.regOrConstant, k.regOrConstant);
         } else {
-            printf("NOOP ");
+            printf("Local variable emmit NOOP ");
             printValue(reg);
             printf("\n");
                 
@@ -484,17 +535,16 @@ struct ASTVariable : ASTNode {
     }
 
     // Only (let var val) and arguments
-    virtual void setRegister(VM *vm, size_t funcID,
-                             Object *symToReg) {
-        assert(!keyExists(symToReg, symbol));
-        add(vm, symToReg, symbol, allocReg(&vm->funcs[funcID]));
+    virtual void setRegister(VM *vm, Scope scope) {
+        assert(!keyExists(scope.symToReg, symbol));
+        set(vm, scope.symToReg, symbol,
+            allocReg(&vm->funcProtos[scope.protoID]));
     }
 
-    virtual Value getRegister(VM *vm, size_t funcID,
-                              Object *symToReg,
+    virtual Value getRegister(VM *vm, Scope scope,
                               Object *valueToConstantSlot) {
-        assert(keyExists(symToReg, symbol));
-        return get(symToReg, symbol);
+        assert(keyExists(scope.symToReg, symbol));
+        return get(scope.symToReg, symbol);
     }
 };
 
@@ -509,16 +559,15 @@ struct ASTArgList : ASTNode {
         printf(")\n");
     };
 
-    virtual void emit(VM *vm, size_t funcID,
-                      Object *symToReg,
+    virtual void emit(VM *vm, Scope scope,
                       Object *valueToConstantSlot) {
+        vm->funcProtos[scope.protoID].numArgs = size(&args);
         for (size_t i = 0; i < size(&args); ++i) {
-            args[i].setRegister(vm, funcID, symToReg);
+            args[i].setRegister(vm, scope);
         }
     }
 
-    virtual Value getRegister(VM *vm, size_t funcID,
-                              Object *symToReg,
+    virtual Value getRegister(VM *vm, Scope scope,
                               Object *valueToConstantSlot) {
         fprintf(stderr, "ICE: argument list does not have a register\n");
         assert(false);
@@ -537,26 +586,29 @@ struct ASTLambda : ASTNode {
         printf(")\n");
     };
 
-    virtual void emit(VM *vm, size_t funcID,
-                      Object *symToReg,
+    virtual void emit(VM *vm, Scope scope,
                       Object *valueToConstantSlot) {
         // create new func and stuffs, add the new func to the
         // constant table(?), load the constant.
 
-        size_t newFuncID = size(&vm->funcs);
-        add(&vm->funcs, Function());
         Object newSymToReg;
+        Scope newScope = {size(&vm->funcProtos), &scope, &newSymToReg};
+        add(&vm->funcProtos, FunctionPrototype());
+        size_t localProtoID =
+            size(&vm->funcProtos[scope.protoID].subFuncProtoIDs);
+        add(&vm->funcProtos[scope.protoID].subFuncProtoIDs,
+            newScope.protoID);
+        //newSymToReg.parent = symToReg;
         Object newValueToConstantSlot;
-        argList.emit(vm, newFuncID, &newSymToReg,
-                     &newValueToConstantSlot);
-        body.emit(vm, newFuncID, &newSymToReg, &newValueToConstantSlot);
-        reg = allocReg(&vm->funcs[funcID]);
-        addRI(&vm->funcs[funcID], OP_LOAD_FUNC, reg.regOrConstant,
-              newFuncID);
+        argList.emit(vm, newScope, &newValueToConstantSlot);
+        body.emit(vm, newScope, &newValueToConstantSlot);
+        reg = allocReg(&vm->funcProtos[scope.protoID]);
+        addRI(&vm->funcProtos[scope.protoID], OP_CREATE_FUNC,
+              reg.regOrConstant,
+              localProtoID);
     }
 
-    virtual Value getRegister(VM *vm, size_t funcID,
-                              Object *symToReg,
+    virtual Value getRegister(VM *vm, Scope scope,
                               Object *valueToConstantSlot) {
         return reg;
     }
@@ -576,30 +628,27 @@ struct ASTCall : ASTNode {
         printf(")\n");
     }
 
-    virtual void emit(VM *vm, size_t funcID,
-                      Object *symToReg,
+    virtual void emit(VM *vm, Scope scope,
                       Object *valueToConstantSlot) {
-        callee->emit(vm, funcID, symToReg, valueToConstantSlot);
-        Value calleeReg = callee->getRegister(vm, funcID, symToReg,
+        callee->emit(vm, scope, valueToConstantSlot);
+        Value calleeReg = callee->getRegister(vm, scope,
                                               valueToConstantSlot);
         DynamicArray<Value> argRegs;
         for (size_t i = 0; i < size(&args); ++i) {
-            args[i]->emit(vm, funcID, symToReg, valueToConstantSlot);
-            add(&argRegs, args[i]->getRegister(vm, funcID,
-                                               symToReg,
+            args[i]->emit(vm, scope, valueToConstantSlot);
+            add(&argRegs, args[i]->getRegister(vm, scope,
                                                valueToConstantSlot));
         }
-        addR(&vm->funcs[funcID], OP_SETUP_CALL, calleeReg.regOrConstant);
+        addR(&vm->funcProtos[scope.protoID], OP_SETUP_CALL, calleeReg.regOrConstant);
         for (size_t i = 0; i < size(&argRegs); ++i) {
-            addR(&vm->funcs[funcID], OP_PUSH_ARG,
+            addR(&vm->funcProtos[scope.protoID], OP_PUSH_ARG,
                  argRegs[i].regOrConstant);
         }
-        returnReg = allocReg(&vm->funcs[funcID]);
-        addR(&vm->funcs[funcID], OP_CALL, returnReg.regOrConstant);
+        returnReg = allocReg(&vm->funcProtos[scope.protoID]);
+        addR(&vm->funcProtos[scope.protoID], OP_CALL, returnReg.regOrConstant);
     }
 
-    virtual Value getRegister(VM *vm, size_t funcID,
-                              Object *symToReg,
+    virtual Value getRegister(VM *vm, Scope scope,
                               Object *valueToConstantSlot) {
         return returnReg;
     }
@@ -614,8 +663,7 @@ struct ASTDouble : ASTNode {
         printf("%f\n", value);
     }
 
-    virtual void emit(VM *vm, size_t funcID,
-                      Object *symToReg,
+    virtual void emit(VM *vm, Scope scope,
                       Object *valueToConstantSlot) {
         Value v{V_DOUBLE};
         v.doub = value;
@@ -623,16 +671,15 @@ struct ASTDouble : ASTNode {
         if (keyExists(valueToConstantSlot, v)) {
             k = get(valueToConstantSlot, v);
         } else {
-            k = allocConstant(&vm->funcs[funcID], v);
-            add(vm, valueToConstantSlot, v, k);
+            k = allocConstant(&vm->funcProtos[scope.protoID], v);
+            set(vm, valueToConstantSlot, v, k);
         }
-        reg = allocReg(&vm->funcs[funcID]);
-        addRI(&vm->funcs[funcID], OP_LOADK, reg.regOrConstant,
+        reg = allocReg(&vm->funcProtos[scope.protoID]);
+        addRI(&vm->funcProtos[scope.protoID], OP_LOADK, reg.regOrConstant,
               k.regOrConstant);
     }
 
-    virtual Value getRegister(VM *vm, size_t funcID,
-                              Object *symToReg,
+    virtual Value getRegister(VM *vm, Scope scope,
                               Object *valueToConstantSlot) {
         return reg;
     }
@@ -646,8 +693,7 @@ struct ASTBoolean : ASTNode {
         printf("%s\n", value ? "true" : "false");
     }
 
-    virtual void emit(VM *vm, size_t funcID,
-                      Object *symToReg,
+    virtual void emit(VM *vm, Scope scope,
                       Object *valueToConstantSlot) {
         Value v{V_BOOLEAN};
         v.boolean = value;
@@ -655,16 +701,15 @@ struct ASTBoolean : ASTNode {
         if (keyExists(valueToConstantSlot, v)) {
             k = get(valueToConstantSlot, v);
         } else {
-            k = allocConstant(&vm->funcs[funcID], v);
-            add(vm, valueToConstantSlot, v, k);
+            k = allocConstant(&vm->funcProtos[scope.protoID], v);
+            set(vm, valueToConstantSlot, v, k);
         }
-        reg = allocReg(&vm->funcs[funcID]);
-        addRI(&vm->funcs[funcID], OP_LOADK, reg.regOrConstant,
+        reg = allocReg(&vm->funcProtos[scope.protoID]);
+        addRI(&vm->funcProtos[scope.protoID], OP_LOADK, reg.regOrConstant,
               k.regOrConstant);
     }
 
-    virtual Value getRegister(VM *vm, size_t funcID,
-                              Object *symToReg,
+    virtual Value getRegister(VM *vm, Scope scope,
                               Object *valueToConstantSlot) {
         return reg;
     }
@@ -690,30 +735,26 @@ struct ASTMakeObject : ASTNode {
         printf(")\n)\n");
     }
 
-    virtual void emit(VM *vm, size_t funcID,
-                      Object *symToReg,
+    virtual void emit(VM *vm, Scope scope,
                       Object *valueToConstantSlot) {
-        reg = allocReg(&vm->funcs[funcID]);
-        addR(&vm->funcs[funcID], OP_MAKE_OBJECT, reg.regOrConstant);
+        reg = allocReg(&vm->funcProtos[scope.protoID]);
+        addR(&vm->funcProtos[scope.protoID], OP_MAKE_OBJECT, reg.regOrConstant);
         for (size_t i = 0; i < size(&slots); ++i) {
-            slots[i].key->emit(vm, funcID, symToReg, valueToConstantSlot);
-            slots[i].value->emit(vm, funcID, symToReg,
-                                 valueToConstantSlot);
-            Value keyReg = slots[i].key->getRegister(vm, funcID,
-                                                     symToReg,
+            slots[i].key->emit(vm, scope, valueToConstantSlot);
+            slots[i].value->emit(vm, scope, valueToConstantSlot);
+            Value keyReg = slots[i].key->getRegister(vm, scope,
                                                      valueToConstantSlot);
-            Value valueReg = slots[i].value->getRegister(vm, funcID,
-                                                         symToReg,
-                                                         valueToConstantSlot);
-            addRRR(&vm->funcs[funcID], OP_SET_OBJECT_SLOT,
+            Value valueReg =
+                slots[i].value->getRegister(vm, scope,
+                                            valueToConstantSlot);
+            addRRR(&vm->funcProtos[scope.protoID], OP_SET_OBJECT_SLOT,
                    reg.regOrConstant,
                    keyReg.regOrConstant,
                    valueReg.regOrConstant);
         }
     }
 
-    virtual Value getRegister(VM *vm, size_t funcID,
-                              Object *symToReg,
+    virtual Value getRegister(VM *vm, Scope scope,
                               Object *valueToConstantSlot) {
         return reg;
     }
@@ -731,25 +772,23 @@ struct ASTDefine : ASTNode {
         printf(")\n");
     }
 
-    virtual void emit(VM *vm, size_t funcID,
-                      Object *symToReg,
+    virtual void emit(VM *vm, Scope scope,
                       Object *valueToConstantSlot) {
-        expr->emit(vm, funcID, symToReg, valueToConstantSlot);
+        expr->emit(vm, scope, valueToConstantSlot);
         Value k;
         if (keyExists(valueToConstantSlot, var)) {
             k = get(valueToConstantSlot, var);
         } else {
-            k = allocConstant(&vm->funcs[funcID], var);
-            add(vm, valueToConstantSlot, var, k);
+            k = allocConstant(&vm->funcProtos[scope.protoID], var);
+            set(vm, valueToConstantSlot, var, k);
         }
-        addRI(&vm->funcs[funcID], OP_DEFINE_GLOBAL,
-              expr->getRegister(vm, funcID, symToReg,
+        addRI(&vm->funcProtos[scope.protoID], OP_DEFINE_GLOBAL,
+              expr->getRegister(vm, scope,
                                 valueToConstantSlot).regOrConstant,
               k.regOrConstant);
     }
 
-    virtual Value getRegister(VM *vm, size_t funcID,
-                              Object *symToReg,
+    virtual Value getRegister(VM *vm, Scope scope,
                               Object *valueToConstantSlot) {
         fprintf(stderr, "ERROR: define can't be used as an expression\n");
         assert(false);
@@ -773,8 +812,11 @@ T *alloc(ArenaAllocator *arena) {
     assert(sizeof(T) + sizeof(ArenaAllocator) < arena->size);
     if (arena->last->top + sizeof(T) +
         sizeof(ArenaAllocator) > arena->size) {
-        arena->last->next = alloc<ArenaAllocator>(arena);
+        arena->last->next = new(((char *)arena->last->mem) +
+                                arena->last->top) ArenaAllocator;
+        arena->last->top += sizeof(ArenaAllocator);
         arena->last = arena->last->next;
+        arena->last->mem = malloc(arena->size);
     }
     T *ret = new(((char *)arena->last->mem) + arena->last->top) T;
     arena->last->top += sizeof(T);
@@ -795,8 +837,8 @@ void freeArena(ArenaAllocator *arena) {
 ASTSymbol symbolToAST(Value tree) {
     assert(tree.type == V_SYMBOL);
     ASTSymbol ret;
-    ret.str = tree.symstr;
-    ret.symid = tree.symid;
+    ret.str = tree.sym.str;
+    ret.symid = tree.sym.id;
     return ret;
 }
 
@@ -870,7 +912,7 @@ ASTArgList argListToAST(Value tree) {
 ASTBody bodyToAST(ArenaAllocator *arena, Value tree);
 
 // Fix me, Intern lambda, quote etc.
-#define parseTreeSymCmp(tree, str) (!strcmp((tree).symstr, str))
+#define parseTreeSymCmp(tree, s) (!strcmp((tree).sym.str, s))
 
 #define firstInListIsType(tree, p_type) (((tree).pair &&               \
                                           (tree).pair->car.type ==     \
@@ -1037,7 +1079,7 @@ void printValue(Value v) {
     switch(v.type) {
         case V_REG_OR_CONSTANT: {
             printf("<reg or constant: %d global: %s>",
-                   v.regOrConstant, v.global ? "true" : "false");
+                   v.regOrConstant, v.nonLocal ? "true" : "false");
         } break;
         case V_STRING: {
             printf("\"%s\"", v.str);
@@ -1049,7 +1091,7 @@ void printValue(Value v) {
             printf("<opaque: %p type: %llu>", v.opaque, v.opaqueType);
         } break;
         case V_FUNCTION: {
-            printf("<func: %lx>", v.funcID);
+            printf("<func: %p>", v.func);
         } break;
         case V_OBJECT: {
             printObject(v.object);
@@ -1064,7 +1106,7 @@ void printValue(Value v) {
             printf("%f", v.doub);
         } break;
         case V_SYMBOL: {
-            printf("%s", v.symstr);
+            printf("%s", v.sym.str);
         } break;
         case V_CONS_PAIR: {
             printf("(");
@@ -1107,6 +1149,10 @@ void printOpCode(OpCode undecoded) {
     OpCode op = getOp(undecoded);
     printf("%s ", opCodeStr[op]);
     switch (opCodeTypes[op]) {
+        case OT_I: {
+            uint32 immId = getImm(undecoded);
+            printf("i%x\n", immId);
+        } break;
         case OT_N: {
             printf("\n");
         } break;
@@ -1133,7 +1179,8 @@ void printOpCode(OpCode undecoded) {
     }
 }
 
-void printFuncCode(Function *func) {
+void printFuncProtoCode(FunctionPrototype *func) {
+    printf("NUM ARGS: %lu\n", func->numArgs);
     printf("CONSTANT TABLE:\n");
     for (size_t i = 0; i < size(&func->constants); ++i) {
         printf("i%lx ", i);
@@ -1146,12 +1193,12 @@ void printFuncCode(Function *func) {
     }
 }
 
-void compileString(VM *vm, char *prog) {
+Value compileString(VM *vm, char *prog) {
     LexState lex = initLexerState(vm, prog);
     Object symToReg;
     Object valueToConstantSlot;
-    size_t funcID = size(&vm->funcs);
-    add(&vm->funcs, Function());
+    Scope topScope = {size(&vm->funcProtos), 0, &symToReg};
+    add(&vm->funcProtos, FunctionPrototype());
     ASTNode *node = 0;
     ArenaAllocator arena;
     {
@@ -1166,7 +1213,7 @@ void compileString(VM *vm, char *prog) {
             printf("\n\n");
             node = exprToAST(&arena, getC(vm, currTree).car);
             node->traverse();
-            node->emit(vm, funcID, &symToReg, &valueToConstantSlot);
+            node->emit(vm, topScope, &valueToConstantSlot);
             if (peekToken(&lex).type != T_EOF) {
                 ConsPair *p = allocConsPair(vm);
                 getC(vm, currTree).cdr.pair = p;
@@ -1183,16 +1230,20 @@ void compileString(VM *vm, char *prog) {
         assert(false);
     }
     if (node->hasReg) {
-        Value retReg = node->getRegister(vm, funcID, &symToReg,
+        Value retReg = node->getRegister(vm, topScope,
                                          &valueToConstantSlot);
-        addR(&vm->funcs[funcID], OP_RETURN, retReg.regOrConstant);
+        addR(&vm->funcProtos[topScope.protoID],
+             OP_RETURN, retReg.regOrConstant);
     } else {
-        addN(&vm->funcs[funcID], OP_RETURN_UNDEF);
+        addN(&vm->funcProtos[topScope.protoID], OP_RETURN_UNDEF);
     }
     freeArena(&arena);
+    Value ret = {V_FUNCTION};
+    ret.func = allocFunction(vm, &vm->funcProtos[topScope.protoID]);
+    return ret;
 }
 
-void compileFile(VM *vm, const char *path) {
+Value compileFile(VM *vm, const char *path) {
     FILE *file = fopen(path, "r");
     long int length;
     fseek(file, 0, SEEK_END);
@@ -1202,7 +1253,7 @@ void compileFile(VM *vm, const char *path) {
     prog[length] = 0;
     fread(prog, sizeof(char), length, file);
     fclose(file);
-    compileString(vm, prog);
+    return compileString(vm, prog);
 }
 
 size_t allocFrame(VM *vm, Function *func) {
@@ -1217,50 +1268,79 @@ size_t allocFrame(VM *vm, Function *func) {
     vm->frameStackTop++;
     *frame = ActivationFrame();
     frame->func = func; // Might this break?? or not??
-    resize(&frame->registers, frame->func->numRegs);
+    resize(&frame->registers, frame->func->prototype->numRegs);
     return vm->frameStackTop;
 }
 
 void popFrame(VM *vm) {
     vm->frameStackTop--;
+    resize(&vm->frameStack[vm->frameStackTop].registers, 0);
 }
 
-
-size_t allocFrame(VM *vm, size_t funcID) {
-    return allocFrame(vm, &vm->funcs[funcID]);
+void closeAllUpvalues(VM *vm, ActivationFrame *frame) {
+    if (vm->openUpvalueHead) {
+        void *start = &frame->registers[0];
+        void *end = (&frame->registers[size(&frame->registers)-1])+1;
+        while (vm->openUpvalueHead &&
+               vm->openUpvalueHead->value >= start &&
+               vm->openUpvalueHead->value < end) {
+            vm->openUpvalueHead->closed = *vm->openUpvalueHead->value;
+            vm->openUpvalueHead->value = &vm->openUpvalueHead->closed;
+            vm->openUpvalueHead = vm->openUpvalueHead->next;
+        }
+        Upvalue *u = vm->openUpvalueHead;
+        while (u) {
+            if (!u->next || (u->next &&
+                             u->next->value >= start &&
+                             u->next->value < end)) {
+                u = u->next;
+            } else {
+                u->next->closed = *u->next->value;
+                u->next->value = &u->next->closed;
+                Upvalue *t = u->next;
+                u->next = u->next->next;
+                t->next = 0;
+            }
+        }
+    }
 }
 
 Value runFunc(VM *vm, size_t frameID) {
     OpCode undecoded;
     ActivationFrame *frame = &vm->frameStack[frameID-1];
  loop:
-    undecoded = frame->func->code[frame->pc];
+    undecoded = frame->func->prototype->code[frame->pc];
     OpCode instr = getOp(undecoded);
     switch(instr) {
         case OP_LOADK: {
             uint8 reg = getRegA(undecoded);
             uint32 k = getImm(undecoded);
-            frame->registers[reg] = frame->func->constants[k];
+            frame->registers[reg] = frame->func->prototype->constants[k];
             frame->pc++;
         } break;
         case OP_SETUP_CALL: {
             goto call;
         } break;
         case OP_RETURN: {
+            closeAllUpvalues(vm, frame);
             uint8 reg = getRegA(undecoded);
-            if (frame->caller) {
-                ActivationFrame *caller = &vm->frameStack[frame->caller-1];
+            if (!frame->calledFromCpp) {
+                frameID -= 1;
+                ActivationFrame *caller = &vm->frameStack[frameID-1];
                 caller->registers[frame->retReg] = frame->registers[reg];
                 frame = caller;
             } else {
+                Value ret = frame->registers[reg];
                 popFrame(vm);
-                return frame->registers[reg];
+                return ret;
             }
             popFrame(vm);
         } break;
         case OP_RETURN_UNDEF: {
-            if (frame->caller) {
-                ActivationFrame *caller = &vm->frameStack[frame->caller-1];
+            closeAllUpvalues(vm, frame);
+            if (!frame->calledFromCpp) {
+                frameID -= 1;
+                ActivationFrame *caller = &vm->frameStack[frameID-1];
                 caller->registers[frame->retReg] = Value{V_UNDEF};
                 frame = caller;
             } else {
@@ -1269,12 +1349,27 @@ Value runFunc(VM *vm, size_t frameID) {
             }
             popFrame(vm);
         } break;
-        case OP_LOAD_FUNC: {
+        case OP_CREATE_FUNC: {
             uint8 reg = getRegA(undecoded);
-            uint32 funcID = getImm(undecoded);
+            uint32 localProtoID = getImm(undecoded);
             Value func = {V_FUNCTION};
-            func.funcID = funcID;
+            size_t protoID =
+                frame->func->prototype->subFuncProtoIDs[localProtoID];
+            func.func = allocFunction(vm, &vm->funcProtos[protoID]);
             frame->registers[reg] = func;
+            for (size_t i = 0;
+                 i < size(&frame->registers[reg].func->upvalues); ++i) {
+                Upvalue *u;
+                FunctionPrototype *proto = &vm->funcProtos[protoID];
+                if (proto->upvalues[i].local) {
+                    u = allocUpvalue(vm);
+                    u->value =
+                        &frame->registers[proto->upvalues[i].index];
+                } else {
+                    u = frame->func->upvalues[proto->upvalues[i].index];
+                }
+                frame->registers[reg].func->upvalues[i] = u;
+            }
             frame->pc++;
         } break;
         case OP_PUSH_ARG: {
@@ -1307,30 +1402,37 @@ Value runFunc(VM *vm, size_t frameID) {
                 assert(false);
             }
             Value val = frame->registers[valReg];
-            add(vm, obj.object, key, val);
+            set(vm, obj.object, key, val);
             frame->pc++;
         } break;
         case OP_DEFINE_GLOBAL: {
             uint8 reg = getRegA(undecoded);
             uint32 k = getImm(undecoded);
-            if (frame->func->constants[k].type != V_SYMBOL) {
+            if (frame->func->prototype->constants[k].type != V_SYMBOL) {
                 fprintf(stderr, "ICE: DEFINE_GLOBAL imm not a symbol\n");
                 assert(false);
             }
 
-            add(vm, &vm->globals, frame->func->constants[k], 
+            set(vm, &vm->globals, frame->func->prototype->constants[k], 
                 frame->registers[reg]); 
             frame->pc++;
         } break;
         case OP_GET_GLOBAL: {
             uint8 reg = getRegA(undecoded);
             uint32 k = getImm(undecoded);
-            if (frame->func->constants[k].type != V_SYMBOL) {
+            if (frame->func->prototype->constants[k].type != V_SYMBOL) {
                 fprintf(stderr, "ICE: GET_GLOBAL imm not a symbol\n");
                 assert(false);
             }
             frame->registers[reg] = get(&vm->globals,
-                                        frame->func->constants[k]);
+                                        frame->func->prototype->constants[k]);
+            frame->pc++;
+        } break;
+        case OP_GET_UPVALUE: {
+            uint8 reg = getRegA(undecoded);
+            uint32 upvalueIdx = getImm(undecoded);
+            frame->registers[reg] =
+                *frame->func->upvalues[upvalueIdx]->value;
             frame->pc++;
         } break;
         default: {
@@ -1348,13 +1450,13 @@ Value runFunc(VM *vm, size_t frameID) {
         assert(callee.type == V_FUNCTION);
         frame->pc++;
         
-        size_t calleeFrameID = allocFrame(vm, callee.funcID);
+        size_t calleeFrameID = allocFrame(vm, callee.func);
         frame = &vm->frameStack[frameID-1];
         ActivationFrame *calleeFrame = &vm->frameStack[calleeFrameID-1];
-        calleeFrame->caller = frameID;
+        calleeFrame->calledFromCpp = false;
         uint8 dstReg = 0;
     pushArgLoop:
-        undecoded = frame->func->code[frame->pc];
+        undecoded = frame->func->prototype->code[frame->pc];
         instr = getOp(undecoded);
         switch(instr) {
             case OP_PUSH_ARG: {
@@ -1369,6 +1471,11 @@ Value runFunc(VM *vm, size_t frameID) {
                 uint8 retReg = getRegA(undecoded);
                 calleeFrame->retReg = retReg;
                 frame = calleeFrame;
+                frameID = calleeFrameID;
+                if (dstReg != frame->func->prototype->numArgs) {
+                    fprintf(stderr, "Not correct amount of arguments!\n");
+                    assert(false);
+                }
                 goto loop;
             } break;
             default: {
@@ -1388,17 +1495,17 @@ Value runFunc(VM *vm, size_t frameID) {
     }
 }
 
-void pushValue(VM *vm, Value v) {
-    add(&vm->apiStack, v);
-}
-
 void call(VM *vm, uint8 numArgs) {
     Value callee = pop(&vm->apiStack);
     assert(callee.type == V_FUNCTION);
-    size_t frameID = allocFrame(vm, callee.funcID);
+    size_t frameID = allocFrame(vm, callee.func);
     ActivationFrame *frame = &vm->frameStack[frameID-1];
+    if (numArgs != frame->func->prototype->numArgs) {
+        fprintf(stderr, "Not correct amount of argument!\n");
+        assert(false);
+    }
     uint8 reg = 0;
-    for (size_t i = size(&vm->apiStack)-numArgs-1;
+    for (size_t i = size(&vm->apiStack)-numArgs;
          i < size(&vm->apiStack); ++i) {
         frame->registers[reg] = vm->apiStack[i];
         reg++;
@@ -1407,39 +1514,36 @@ void call(VM *vm, uint8 numArgs) {
     pushValue(vm, runFunc(vm, frameID));
 }
 
-Value peek(VM *vm, int idx) {
-    if (idx < 1) {
-        idx = size(&vm->apiStack) + idx;
-        return vm->apiStack[idx];
-    } else {
-        return vm->apiStack[idx];
-    }
+void doString(VM *vm, char *prog, size_t numArgs = 0) {
+    pushValue(vm, compileString(vm, prog));
+    call(vm, numArgs);
 }
 
-void getGlobal(VM *vm, Value variable) {
-    assert(variable.type == V_SYMBOL);
-    add(&vm->apiStack, get(&vm->globals, variable));
+void doFile(VM *vm, const char *path, size_t numArgs = 0) {
+    pushValue(vm, compileFile(vm, path));
+    for (size_t i = 0; i < size(&vm->funcProtos); ++i) {
+        printFuncProtoCode(&vm->funcProtos[i]);
+    }
+    call(vm, numArgs);
 }
 
 int main(int argc, char *argv[]) {
     VM vm;
-    compileFile(&vm, "./basic.lsp");
-        for (size_t i = 0; i < size(&vm.funcs); ++i) {
-            printf("\nFUNC: %lu\n", i);
-            printFuncCode(&vm.funcs[i]);
-        }
-    printf("\nRUNNING:\n");
-    for (int i = 0; i < 100; ++i) {
-        Value f = {V_FUNCTION};
-        f.funcID = 0;
-        pushValue(&vm, f);
-        call(&vm, 0);
+    doFile(&vm, "./basic.lsp");
+    printf("\n");
+    printValue(peek(&vm, -1));
+    printf("\n");
+    collect(&vm);
+    pushValue(&vm, Value(V_UNDEF));
+    setGlobal(&vm, intern(&vm, "testFunc2"));
+    for (int i = 0; i < 10; ++i) {
         getGlobal(&vm, intern(&vm, "testFunc"));
         call(&vm, 0);
         //getGlobal(&vm, 1);
         printValue(peek(&vm, -1));
-        clearStack(&vm);
         printf("\n");
+        clearStack(&vm);
+        collect(&vm);
     }
     freeVM(&vm);
     

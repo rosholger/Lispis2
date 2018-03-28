@@ -35,19 +35,23 @@
 
 + [X] better symbol interning
   
-+ [ ] intern keywords and make the ast builder use the inturned versions
++ [X] REMOVE NEW
   
-+ [ ] REMOVE NEW
++ [ ] intern keywords and make the ast builder use the inturned versions
   
 + [ ] Change strings from char * to struct String
 
-+ [ ] Objects
++ [-] Objects
 
   + [X] Replace with one built on top of DynamicVector
 
     std::map sucks
 
   + [ ] Parent
+    
+  + [ ] Remove slot
+    
+    Needs care about removing objects that are present in parent
 
   + [ ] Array part
 
@@ -59,7 +63,7 @@
 
 + [ ] string interning?
 
-+ [ ] quote.
++ [X] quote.
 
   + [X] primitives
 
@@ -85,11 +89,18 @@
 + [ ] Closures
 
   Lua style upvalues will be used.
+  + [ ] Make a CLOSE op, like lua
 
 + [ ] Globals
+  + [X] Getting globals
+  + [ ] Setting globals
+    #+BEGIN_SRC C++
+    pushInt(vm, 23);
+    setGlobal(vm, intern(vm, "foo"));
+    #+END_SRC
 
 + [ ] Calling C++
-
+  
 + [ ] Lists, cons et. al.
 
 + [ ] Macros

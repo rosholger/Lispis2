@@ -33,8 +33,9 @@ OPCODE(CALL)
 OPCODE(RETURN)
 // One argument, the register holding the value to return.
 
-OPCODE(LOAD_FUNC)
-// two arguments, first a register second an immediate function id
+OPCODE(CREATE_FUNC)
+// two arguments, first a register
+// second an immediate local function prototype id
 
 OPCODE(MAKE_OBJECT)
 // creates an empty object. One argument, the register to hold the object.
@@ -48,7 +49,12 @@ OPCODE(DEFINE_GLOBAL)
 // that will become the variable
 
 OPCODE(GET_GLOBAL)
-// two arguments, the reg that will hold the value and the immediate symbol id
-// refering to the symbol
+// two arguments, the reg that will hold the value and the immediate
+// symbol id refering to the symbol
 
 OPCODE(RETURN_UNDEF)
+// No arguments
+
+OPCODE(GET_UPVALUE)
+// two arguments, the reg to put the value in and the immediate
+// upvalue index

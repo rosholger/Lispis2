@@ -8,9 +8,11 @@
 #include <cstring>
 #include <cstdint>
 
+// How do we make shure that all the DynamicArray's are treated as roots?
 struct DynamicArrayData {
     GCObject gcObject;
     bool containsValues; // ie struct Value
+    size_t size;
     char data[0];
 };
 
@@ -33,11 +35,15 @@ T *array(DynamicArray<T> *a) {
     return a->v.size();
 }
 
+// Warning! If your DynamicArray is stored in the heap this will
+// crash (when we go over to managed array implementation)!
 template <typename T>
 void resize(DynamicArray<T> *a, size_t newSize, T val = T()) {
     a->v.resize(newSize, val);
 }
 
+// Warning! If your DynamicArray is stored in the heap this will
+// crash (when we go over to managed array implementation)!
 template <typename T>
 void add(DynamicArray<T> *a, T v) {
     a->v.push_back(v);
@@ -76,7 +82,8 @@ enum OpCodeType {
     OT_R,
     OT_RR,
     OT_RRR,
-    OT_RI
+    OT_RI,
+    OT_I
 };
 
 extern OpCodeType opCodeTypes[];
@@ -85,10 +92,43 @@ extern const char *opCodeStr[];
 
 struct Value;
 
-struct Function {
+// Warning! DO NOT CREATE THIS YOUR SELF!!!!
+// Use intern!!!
+struct Symbol {
+    int id;
+    char *str;
+};
+
+struct UpvalueDesc {
+    Symbol variable;
+    // The variable that this refers to (debug and compiler).
+    bool local;
+    // Is it local?
+    // That is does index refer to a register the parent closure?
+    uint8 index;
+    // If local == true then this is the register index of the value
+    // to close over, otherwise it refers to the parent closures
+    // upvalue[index]
+};
+
+struct FunctionPrototype {
+    GCObject gcObj;
     DynamicArray<Value> constants;
     DynamicArray<OpCode> code;
+    DynamicArray<size_t> subFuncProtoIDs;
+    DynamicArray<UpvalueDesc> upvalues;
+    //DynamicArray<FunctionPrototype *> subFunctions;
     size_t numRegs = 0;
+    size_t numArgs;
+};
+
+struct Upvalue;
+
+// Rename to Closure
+struct Function {
+    GCObject gcObj;
+    FunctionPrototype *prototype;
+    DynamicArray<Upvalue *> upvalues;
 };
 
 enum ValueType {
@@ -110,20 +150,21 @@ struct ActivationFrame {
     size_t stackTop = 0;
     Function *func = 0;
     size_t pc = 0;
-    size_t caller = 0; // 0 if C, frameID of caller is this - 1
+    //size_t caller = 0; // 0 if C, frameID of caller is this - 1
+    bool calledFromCpp = true;
     //ActivationFrame *caller = 0; // null if C
     uint8 retReg = 0;
 };
 
 struct ObjectSlot;
 
-// Maybe allow strings as keys to?
-// IE symbols, strings and doubles.
-// This would make Object perfect for string interning.
+// Need a way to check if key is present
+// in this object and not its parent, codegen needs that.
 struct Object {
     GCObject gcObj;
     Object();
     DynamicArray<ObjectSlot> slots;
+    Object *parent = 0;
 };
 
 void clear(Object *obj);
@@ -134,15 +175,16 @@ struct Handle {
 
 
 struct VM {
-    DynamicArray<Function> funcs;
+    DynamicArray<FunctionPrototype> funcProtos;
     DynamicArray<Value> apiStack;
     DynamicArray<ActivationFrame> frameStack;
-    DynamicArray<GCObject *> handles;
     size_t frameStackTop = 0;
+    DynamicArray<GCObject *> handles;
     Object globals;
     GC gc;
     Object symbolTable;
     int symbolIdTop = 0;
+    Upvalue *openUpvalueHead = 0;
 };
 
 void free(VM *vm, Handle handle);
@@ -167,6 +209,7 @@ struct ConsPair;
 */
 ConsPair &getC(VM *vm, Handle handle);
 Object &getO(VM *vm, Handle handle);
+GCObjectType type(VM *vm, Handle handle);
 
 Handle reserve(VM *vm, ConsPair *c);
 Handle reserve(VM *vm, Object *o);
@@ -185,18 +228,15 @@ struct Value {
     Value(ValueType t);
     ValueType type;
     union {
-        size_t funcID;
+        Function *func;
         CFunction cfunc;
         double doub;
         bool boolean;
-        struct {
+        struct { // Used in the compiler only
             uint8 regOrConstant;
-            bool global;
+            bool nonLocal;
         };
-        struct {
-            int symid; // maybe make symid 64bit?
-            char *symstr;
-        };
+        Symbol sym;
         char *str;
         Object *object;
         struct {
@@ -206,6 +246,15 @@ struct Value {
         ConsPair *pair;
     };
 };
+
+struct Upvalue {
+    GCObject gcObj;
+    Upvalue();
+    Value *value;
+    Value closed;
+    Upvalue *next;
+};
+
 // if key is V_UNDEF and value is true then this is a tombstone,
 // if key is V_UNDEF and value is false then this cell is empty
 // Warning! Adding anything breaks GC
@@ -225,9 +274,10 @@ Value at(Value v, size_t idx);
 
 ConsPair *allocConsPair(VM *vm);
 Object *allocObject(VM *vm);
+Function *allocFunction(VM *vm, FunctionPrototype *prototype);
+Upvalue *allocUpvalue(VM *vm);
 
-// Change to set
-void add(VM *vm, Object *o, Value key, Value value);
+void set(VM *vm, Object *o, Value key, Value value);
 Value &get(Object *o, Value key);
 bool keyExists(Object *o, Value key);
 
@@ -252,7 +302,7 @@ bool operator==(Value a, Value b) {
                 return a.doub == b.doub;
             } break;
             case V_FUNCTION: {
-                return a.funcID == b.funcID;
+                return a.func == b.func;
             } break;
             case V_OBJECT: {
                 return a.object == b.object;
@@ -267,14 +317,14 @@ bool operator==(Value a, Value b) {
                 return !strcmp(a.str, b.str);
             } break;
             case V_SYMBOL: {
-                return a.symid == b.symid;
+                return a.sym.id == b.sym.id;
             } break;
             case V_UNDEF: {
                 return false;
             } break;
             case V_REG_OR_CONSTANT: {
                 return (a.regOrConstant == b.regOrConstant &&
-                        a.global == b.global);
+                        a.nonLocal == b.nonLocal);
             } break;
         }
     }
@@ -283,4 +333,26 @@ bool operator==(Value a, Value b) {
 
 // Illegal to use vm after calling freeVM on it.
 void freeVM(VM *vm);
+void getGlobal(VM *vm, Symbol variable);
+void setGlobal(VM *vm, Symbol variable);
+
+// Can't exist (atleast not as public api), instead we need specific
+// different ones for different types, And Handle's for GCObject's
+Value peek(VM *vm, int idx);
+Value pop(VM *vm);
+
+void pushDouble(VM *vm, double doub);
+void pushSymbol(VM *vm, char *symstr);
+void pushSymbol(VM *vm, Symbol symbol);
+void pushString(VM *vm, char *str);
+void pushBoolean(VM *vm, bool boolean);
+void pushOpaque(VM *vm, void *opaque, uint64 type);
+void pushHandle(VM *vm, Handle handle);
+
+// Should be internal
+void pushValue(VM *vm, Value v);
+Symbol intern(VM *vm, const char *str);
+
+void collect(VM *vm);
+
 #endif
