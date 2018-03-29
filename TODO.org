@@ -51,9 +51,14 @@
     
   + [ ] Remove slot
     
-    Needs care about removing objects that are present in parent
+    Needs care about removing objects that are present in parent.
 
-  + [ ] Array part
+    Maybe just make remove be set with undef? atleast if the key exists
+    in the parent...
+
+  + [ ] Array part?
+
+    Maybe we should make vectors first class?
 
 + [ ] Replace DynamicVector
 
@@ -86,9 +91,10 @@
 
   [args] -> lambda (args)
 
-+ [ ] Closures
++ [-] Closures
 
   Lua style upvalues will be used.
+  WORKS!!!!
   + [ ] Make a CLOSE op, like lua
 
 + [ ] Globals

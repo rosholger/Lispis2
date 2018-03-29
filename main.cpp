@@ -264,14 +264,34 @@ void parseList(VM *vm, LexState *lex, Handle parent) {
     free(vm, currParent);
 }
 
-Value allocReg(FunctionPrototype *func, bool nonLocal = false) {
-    size_t reg = func->numRegs;
-    assert(reg <= UCHAR_MAX);
-    func->numRegs++;
-    Value ret{V_REG_OR_CONSTANT};
-    ret.regOrConstant = reg;
-    ret.nonLocal = nonLocal;
-    return ret;
+struct Scope {
+    size_t protoID;
+    Scope *parent;
+    Object *symToReg;
+    DynamicArray<size_t> *freeRegisters;
+};
+
+
+Value allocReg(FunctionPrototype *func, Scope scope,
+               bool nonLocal = false) {
+    if (size(scope.freeRegisters) == 0) {
+        size_t reg = func->numRegs;
+        assert(reg <= UCHAR_MAX);
+        func->numRegs++;
+        Value ret{V_REG_OR_CONSTANT};
+        ret.regOrConstant = reg;
+        ret.nonLocal = nonLocal;
+        return ret;
+    } else {
+        Value ret{V_REG_OR_CONSTANT};
+        ret.regOrConstant = pop(scope.freeRegisters);
+        ret.nonLocal = nonLocal;
+        return ret;
+    }
+}
+
+void freeReg(Scope scope, size_t reg) {
+    add(scope.freeRegisters, reg);
 }
 
 Value allocConstant(FunctionPrototype *func, Value val) {
@@ -357,12 +377,6 @@ struct VarReg {
     size_t reg;
 };
 
-struct Scope {
-    size_t protoID;
-    Scope *parent;
-    Object *symToReg;
-};
-
 struct ASTNode {
     ASTNodeType type;
     bool hasReg;
@@ -404,7 +418,7 @@ struct ASTBody : ASTNode {
 
     virtual Value getRegister(VM *vm, Scope scope,
                               Object *valueToConstantSlot) {
-        fprintf(stderr, "ICE: body does not have a register\n");
+        fprintf(stderr, "ICE: body does not have a register?\n");
         assert(false);
     }
 };
@@ -430,7 +444,7 @@ struct ASTSymbol : ASTNode {
             k = allocConstant(&vm->funcProtos[scope.protoID], v);
             set(vm, valueToConstantSlot, v, k);
         }
-        reg = allocReg(&vm->funcProtos[scope.protoID]);
+        reg = allocReg(&vm->funcProtos[scope.protoID], scope);
         addRI(&vm->funcProtos[scope.protoID], OP_LOADK, reg.regOrConstant,
               k.regOrConstant);
     }
@@ -505,7 +519,7 @@ struct ASTVariable : ASTNode {
                       Object *valueToConstantSlot) {
         if (!keyExists(scope.symToReg, symbol)) {
             set(vm, scope.symToReg, symbol,
-                allocReg(&vm->funcProtos[scope.protoID], true));
+                allocReg(&vm->funcProtos[scope.protoID], scope, true));
         }
         Value reg = get(scope.symToReg, symbol);
         if (reg.nonLocal) {
@@ -538,7 +552,7 @@ struct ASTVariable : ASTNode {
     virtual void setRegister(VM *vm, Scope scope) {
         assert(!keyExists(scope.symToReg, symbol));
         set(vm, scope.symToReg, symbol,
-            allocReg(&vm->funcProtos[scope.protoID]));
+            allocReg(&vm->funcProtos[scope.protoID], scope));
     }
 
     virtual Value getRegister(VM *vm, Scope scope,
@@ -592,7 +606,9 @@ struct ASTLambda : ASTNode {
         // constant table(?), load the constant.
 
         Object newSymToReg;
-        Scope newScope = {size(&vm->funcProtos), &scope, &newSymToReg};
+        DynamicArray<size_t> newFreeRegisters;
+        Scope newScope = {size(&vm->funcProtos), &scope, &newSymToReg,
+                          &newFreeRegisters};
         add(&vm->funcProtos, FunctionPrototype());
         size_t localProtoID =
             size(&vm->funcProtos[scope.protoID].subFuncProtoIDs);
@@ -602,7 +618,7 @@ struct ASTLambda : ASTNode {
         Object newValueToConstantSlot;
         argList.emit(vm, newScope, &newValueToConstantSlot);
         body.emit(vm, newScope, &newValueToConstantSlot);
-        reg = allocReg(&vm->funcProtos[scope.protoID]);
+        reg = allocReg(&vm->funcProtos[scope.protoID], scope);
         addRI(&vm->funcProtos[scope.protoID], OP_CREATE_FUNC,
               reg.regOrConstant,
               localProtoID);
@@ -643,8 +659,11 @@ struct ASTCall : ASTNode {
         for (size_t i = 0; i < size(&argRegs); ++i) {
             addR(&vm->funcProtos[scope.protoID], OP_PUSH_ARG,
                  argRegs[i].regOrConstant);
+            if (args[i]->type != ASTT_VARIABLE) {
+                freeReg(scope, argRegs[i].regOrConstant);
+            }
         }
-        returnReg = allocReg(&vm->funcProtos[scope.protoID]);
+        returnReg = allocReg(&vm->funcProtos[scope.protoID], scope);
         addR(&vm->funcProtos[scope.protoID], OP_CALL, returnReg.regOrConstant);
     }
 
@@ -674,7 +693,7 @@ struct ASTDouble : ASTNode {
             k = allocConstant(&vm->funcProtos[scope.protoID], v);
             set(vm, valueToConstantSlot, v, k);
         }
-        reg = allocReg(&vm->funcProtos[scope.protoID]);
+        reg = allocReg(&vm->funcProtos[scope.protoID], scope);
         addRI(&vm->funcProtos[scope.protoID], OP_LOADK, reg.regOrConstant,
               k.regOrConstant);
     }
@@ -704,7 +723,7 @@ struct ASTBoolean : ASTNode {
             k = allocConstant(&vm->funcProtos[scope.protoID], v);
             set(vm, valueToConstantSlot, v, k);
         }
-        reg = allocReg(&vm->funcProtos[scope.protoID]);
+        reg = allocReg(&vm->funcProtos[scope.protoID], scope);
         addRI(&vm->funcProtos[scope.protoID], OP_LOADK, reg.regOrConstant,
               k.regOrConstant);
     }
@@ -737,8 +756,9 @@ struct ASTMakeObject : ASTNode {
 
     virtual void emit(VM *vm, Scope scope,
                       Object *valueToConstantSlot) {
-        reg = allocReg(&vm->funcProtos[scope.protoID]);
+        reg = allocReg(&vm->funcProtos[scope.protoID], scope);
         addR(&vm->funcProtos[scope.protoID], OP_MAKE_OBJECT, reg.regOrConstant);
+        DynamicArray<uint8> regsToFree;
         for (size_t i = 0; i < size(&slots); ++i) {
             slots[i].key->emit(vm, scope, valueToConstantSlot);
             slots[i].value->emit(vm, scope, valueToConstantSlot);
@@ -751,6 +771,15 @@ struct ASTMakeObject : ASTNode {
                    reg.regOrConstant,
                    keyReg.regOrConstant,
                    valueReg.regOrConstant);
+            if (slots[i].key->type != ASTT_VARIABLE) {
+                add(&regsToFree, keyReg.regOrConstant);
+            }
+            if (slots[i].value->type != ASTT_VARIABLE) {
+                add(&regsToFree, valueReg.regOrConstant);
+            }
+        }
+        for (size_t i = 0; i < size(&regsToFree); ++i) {
+            freeReg(scope, regsToFree[i]);
         }
     }
 
@@ -786,6 +815,11 @@ struct ASTDefine : ASTNode {
               expr->getRegister(vm, scope,
                                 valueToConstantSlot).regOrConstant,
               k.regOrConstant);
+        if (expr->type != ASTT_VARIABLE) {
+            freeReg(scope,
+                    expr->getRegister(vm, scope,
+                                      valueToConstantSlot).regOrConstant);
+        }
     }
 
     virtual Value getRegister(VM *vm, Scope scope,
@@ -1197,7 +1231,9 @@ Value compileString(VM *vm, char *prog) {
     LexState lex = initLexerState(vm, prog);
     Object symToReg;
     Object valueToConstantSlot;
-    Scope topScope = {size(&vm->funcProtos), 0, &symToReg};
+    DynamicArray<size_t> freeRegisters;
+    Scope topScope = {size(&vm->funcProtos), 0, &symToReg,
+                      &freeRegisters};
     add(&vm->funcProtos, FunctionPrototype());
     ASTNode *node = 0;
     ArenaAllocator arena;
