@@ -1,11 +1,10 @@
-#ifndef GC_H
-#define GC_H
+#pragma once
 #include <stddef.h>
 
 #define kilobytes(b) b*1024
 #define megabytes(kb) kilobytes(kb)*1024
 
-#define HEAP_START_SIZE kilobytes(1)
+#define HEAP_START_SIZE kilobytes(2)
 #define HEAP_START_MAX_SIZE megabytes(1)
 
 struct GC {
@@ -36,4 +35,3 @@ struct GCObject {
         void *paddingAlignment;
     };
 };
-#endif

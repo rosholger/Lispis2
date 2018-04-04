@@ -58,3 +58,33 @@ OPCODE(RETURN_UNDEF)
 OPCODE(GET_UPVALUE)
 // two arguments, the reg to put the value in and the immediate
 // upvalue index
+
+OPCODE(JMP_IF_FALSE)
+// two arguments, the reg that holds the predicate and the immediate
+// relative jump address
+
+OPCODE(DUMMY)
+// dummy, used for patching
+
+OPCODE(MOVE)
+// two registers, dst, src
+
+OPCODE(JMP)
+// immediate relative jump address
+
+OPCODE(LOAD_UNDEF)
+// the register to load undef into
+
+OPCODE(SET_UPVALUE)
+// the reg holding the value to set it to and the immediate
+// upvalue index
+
+OPCODE(SET_GLOBAL)
+// the reg holding the value to set it to and the immediate
+// constant index of the symbol
+
+OPCODE(CONS)
+// three registers, dst, car, and cdr
+
+OPCODE(LOAD_NULL)
+// one register, dst

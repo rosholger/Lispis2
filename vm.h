@@ -1,5 +1,4 @@
-#ifndef VM_H
-#define VM_H
+#pragma once
 
 #include "gc.h"
 
@@ -70,6 +69,9 @@ void clear(DynamicArray<T> *a) {
 typedef unsigned char uint8;
 typedef unsigned int uint32;
 typedef unsigned long long int uint64;
+typedef char int8;
+typedef int int32;
+typedef long long int int64;
 
 enum OpCode : uint64 {
 #define OPCODE(op) OP_ ## op,
@@ -83,7 +85,9 @@ enum OpCodeType {
     OT_RR,
     OT_RRR,
     OT_RI,
-    OT_I
+    OT_I,
+    OT_RS,
+    OT_S,
 };
 
 extern OpCodeType opCodeTypes[];
@@ -284,6 +288,11 @@ bool keyExists(Object *o, Value key);
 void clearStack(VM *vm);
 
 inline
+bool operator==(Symbol a, Symbol b) {
+    return a.id == b.id;
+}
+
+inline
 bool operator==(Value a, Value b) {
     if (a.type != b.type) {
         return false;
@@ -317,7 +326,7 @@ bool operator==(Value a, Value b) {
                 return !strcmp(a.str, b.str);
             } break;
             case V_SYMBOL: {
-                return a.sym.id == b.sym.id;
+                return a.sym == b.sym;
             } break;
             case V_UNDEF: {
                 return false;
@@ -341,6 +350,15 @@ void setGlobal(VM *vm, Symbol variable);
 Value peek(VM *vm, int idx);
 Value pop(VM *vm);
 
+bool popBoolean(VM *vm);
+double popDouble(VM *vm);
+Symbol popSymbol(VM *vm);
+void car(VM *vm);
+void cdr(VM *vm);
+void dup(VM *vm);
+
+bool isEmptyList(VM *vm);
+
 void pushDouble(VM *vm, double doub);
 void pushSymbol(VM *vm, char *symstr);
 void pushSymbol(VM *vm, Symbol symbol);
@@ -348,6 +366,7 @@ void pushString(VM *vm, char *str);
 void pushBoolean(VM *vm, bool boolean);
 void pushOpaque(VM *vm, void *opaque, uint64 type);
 void pushHandle(VM *vm, Handle handle);
+void pushCFunction(VM *vm, CFunction cfunc);
 
 // Should be internal
 void pushValue(VM *vm, Value v);
@@ -355,4 +374,35 @@ Symbol intern(VM *vm, const char *str);
 
 void collect(VM *vm);
 
-#endif
+uint32_t hashValue(Value v);
+
+void printValue(Value v);
+void printObject(Object *obj);
+size_t length(Value v);
+
+#define bitsize(o) (sizeof(o)*8)
+
+#define getOp(undecoded) ((OpCode)((undecoded) >>                       \
+                                   (bitsize(OpCode) - bitsize(uint8))))
+
+#define getRegA(undecoded) ((0x00FF000000000000 & (undecoded)) >>       \
+                            (bitsize(OpCode) - bitsize(uint8)*2))
+
+#define getRegB(undecoded) ((0x0000FF0000000000 & (undecoded)) >>       \
+                            (bitsize(OpCode) - bitsize(uint8)*3))
+
+#define getRegC(undecoded) ((0x000000FF00000000 & (undecoded)) >>       \
+                            (bitsize(OpCode) - bitsize(uint8)*4))
+
+#define getImm(undecoded) (0x00000000FFFFFFFF & (undecoded))
+
+#define getSImm(undecoded) (0x00000000FFFFFFFF & *((int32 *)&undecoded))
+
+
+void doString(VM *vm, const char *prog, size_t numArgs = 0,
+              bool verbose = true);
+void doFile(VM *vm, const char *path, size_t numArgs = 0,
+            bool verbose = true);
+void call(VM *vm, uint8 numArgs);
+
+VM initVM(bool loadDefaults = true);

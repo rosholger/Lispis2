@@ -36,6 +36,20 @@
 + [X] better symbol interning
   
 + [X] REMOVE NEW
+
++ [X] Reuse temporary registers
+
++ [X] if
+  
++ [X] scope (progn in CL)
+
++ [X] let
+
++ [X] set!
+  
++ [X] Calling C++
+  
++ [ ] make compileString not puke a bunch of debug logging when testing
   
 + [ ] intern keywords and make the ast builder use the inturned versions
   
@@ -105,17 +119,9 @@
     setGlobal(vm, intern(vm, "foo"));
     #+END_SRC
 
-+ [ ] Calling C++
-  
 + [ ] Lists, cons et. al.
 
 + [ ] Macros
-
-+ [ ] let
-
-+ [ ] set!
-
-+ [ ] if
 
 + [ ] for, maybe as iterators?
 
@@ -125,8 +131,3 @@
 
 + [ ] Tune GC
   
-+ [ ] Basic register allocation
-
-  Right now we dont reuse registers that are used for temporaries.
-  This is a problem for the GC, since it means that functions keep
-  all their temporaries alive.

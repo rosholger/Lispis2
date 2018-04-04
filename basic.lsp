@@ -1,4 +1,3 @@
-
 ;(define a (lambda (b c) b)) (a true false)
 
 (define testFunc2
@@ -6,11 +5,13 @@
     (define testFunc
       (lambda () b))))
 (testFunc2 -.5)
+(let a
+  (lambda (b)
+    (lambda (s v)
+      (if (= s (quote set))
+          (set! b v)
+          b))))
 
-;;; ((lambda (a) (make-object (((quote a) 1))) * 86 a) true) returns an
-;;; object. Bizarely if all make-object are replaced with 1s true is
-;;; returned
+(let z (a true))
 
-;(define testFunc
-  ;(lambda ()
-    ;(make-object (((quote a) 1)))))
+(quote (1 (2) () a b c 3 4))
