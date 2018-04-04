@@ -26,6 +26,7 @@ enum ASTNodeType {
     ASTT_LET,
     ASTT_SET,
     ASTT_LIST,
+    ASTT_DEFMACRO,
 };
 
 struct ArenaAllocator {
@@ -118,6 +119,19 @@ struct ASTLambda : ASTNode {
     ASTArgList argList;
     ASTBody body;
     Value reg;
+    virtual void traverse();
+    virtual void emit(VM *vm, Scope scope,
+                      Object *valueToConstantSlot);
+    virtual Value getRegister(VM *vm, Scope scope,
+                              Object *valueToConstantSlot);
+    virtual void freeRegister(Scope scope);
+};
+
+struct ASTDefmacro : ASTNode {
+    ASTDefmacro();
+    Value variable;
+    ASTArgList argList;
+    ASTBody body;
     virtual void traverse();
     virtual void emit(VM *vm, Scope scope,
                       Object *valueToConstantSlot);
@@ -229,8 +243,6 @@ struct ASTSet : ASTNode {
                               Object *valueToConstantSlot);
     virtual void freeRegister(Scope scope);
 };
-
-ASTBody bodyToAST(ArenaAllocator *arena, Value tree);
 
 template <typename T>
 T *alloc(ArenaAllocator *arena) {

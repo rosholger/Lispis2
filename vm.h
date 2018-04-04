@@ -183,10 +183,12 @@ struct VM {
     DynamicArray<Value> apiStack;
     DynamicArray<ActivationFrame> frameStack;
     size_t frameStackTop = 0;
+    // Needs to be Value, since the compiler works with Values
     DynamicArray<GCObject *> handles;
     Object globals;
-    GC gc;
+    Object macros;
     Object symbolTable;
+    GC gc;
     int symbolIdTop = 0;
     Upvalue *openUpvalueHead = 0;
 };

@@ -162,20 +162,20 @@ ASTBoolean booleanToAST(Value tree) {
     return ret;
 }
 
-ASTNode *exprToAST(ArenaAllocator *arena, Value tree);
+ASTNode *exprToAST(VM *vm, ArenaAllocator *arena, Value tree);
 
-ASTCall callToAST(ArenaAllocator *arena, Value tree) {
+ASTCall callToAST(VM *vm, ArenaAllocator *arena, Value tree) {
     assert(tree.type == V_CONS_PAIR);
     ASTCall ret;
     if (length(tree) < 1) {
         fprintf(stderr, "ERROR: calling to nothing does not work!\n");
         assert(false);
     }
-    ret.callee = exprToAST(arena, tree.pair->car);
+    ret.callee = exprToAST(vm, arena, tree.pair->car);
     assert(tree.pair->cdr.type == V_CONS_PAIR);
     tree = tree.pair->cdr;
     while (tree.pair) {
-        add(&ret.args, exprToAST(arena, tree.pair->car));
+        add(&ret.args, exprToAST(vm, arena, tree.pair->car));
         tree = tree.pair->cdr;
     }
     return ret;
@@ -196,7 +196,7 @@ ASTArgList argListToAST(Value tree) {
     return ret;
 }
 
-ASTIf ifToAST(ArenaAllocator *arena, Value tree) {
+ASTIf ifToAST(VM *vm, ArenaAllocator *arena, Value tree) {
     assert(tree.type == V_CONS_PAIR);
     if (length(tree) < 3) {
         fprintf(stderr, "ERROR: if needs atleast predicate and a true branch\n");
@@ -205,17 +205,19 @@ ASTIf ifToAST(ArenaAllocator *arena, Value tree) {
     assert(firstInListIsType(tree, V_SYMBOL));
     assert(parseTreeSymCmp(tree.pair->car, "if"));
     ASTIf ret;
-    ret.pred = exprToAST(arena, at(tree, 1));
-    ret.trueBranch = exprToAST(arena, at(tree, 2));
+    ret.pred = exprToAST(vm, arena, at(tree, 1));
+    ret.trueBranch = exprToAST(vm, arena, at(tree, 2));
     if (length(tree) == 4) {
-        ret.falseBranch = exprToAST(arena, at(tree, 3));
+        ret.falseBranch = exprToAST(vm, arena, at(tree, 3));
     } else {
         ret.falseBranch = 0;
     }
     return ret;
 }
 
-ASTLambda lambdaToAST(ArenaAllocator *arena, Value tree) {
+ASTBody bodyToAST(VM *vm, ArenaAllocator *arena, Value tree);
+
+ASTLambda lambdaToAST(VM *vm, ArenaAllocator *arena, Value tree) {
     assert(tree.type == V_CONS_PAIR);
     ASTLambda ret;
     if (length(tree) < 3) {
@@ -226,7 +228,27 @@ ASTLambda lambdaToAST(ArenaAllocator *arena, Value tree) {
     assert(parseTreeSymCmp(tree.pair->car, "lambda"));
     Value afterLambdaSym = tree.pair->cdr;
     ret.argList = argListToAST(afterLambdaSym.pair->car);
-    ret.body = bodyToAST(arena, afterLambdaSym.pair->cdr);
+    ret.body = bodyToAST(vm, arena, afterLambdaSym.pair->cdr);
+    return ret;
+}
+
+ASTDefmacro defmacroToAST(VM *vm, ArenaAllocator *arena, Value tree) {
+    assert(tree.type == V_CONS_PAIR);
+    ASTDefmacro ret;
+    if (length(tree) < 4) {
+        fprintf(stderr, "ERROR: defmacro needs a variable, an argument list and a body!\n");
+        assert(false);
+    }
+    assert(firstInListIsType(tree, V_SYMBOL));
+    assert(parseTreeSymCmp(tree.pair->car, "defmacro"));
+    Value afterDefmacroSym = tree.pair->cdr;
+    if (afterDefmacroSym.pair->car.type != V_SYMBOL) {
+        fprintf(stderr, "defmacro variable not a symbol!");
+        assert(false);
+    }
+    ret.variable = afterDefmacroSym.pair->car;
+    ret.argList = argListToAST(afterDefmacroSym.pair->cdr.pair->car);
+    ret.body = bodyToAST(vm, arena, afterDefmacroSym.pair->cdr.pair->cdr);
     return ret;
 }
 
@@ -264,18 +286,18 @@ ASTNode *quotedToAST(ArenaAllocator *arena, Value tree) {
     return ret;
 }
 
-MakeObjectSlot makeObjectSlot(ArenaAllocator *arena, Value tree) {
+MakeObjectSlot makeObjectSlot(VM *vm, ArenaAllocator *arena, Value tree) {
     MakeObjectSlot ret;
     if (tree.type != V_CONS_PAIR || length(tree) != 2) {
         fprintf(stderr, "ERROR: make-object's argument has to be an associative list\n");
         assert(false);
     }
-    ret.key = exprToAST(arena, tree.pair->car);
-    ret.value = exprToAST(arena, tree.pair->cdr.pair->car);
+    ret.key = exprToAST(vm, arena, tree.pair->car);
+    ret.value = exprToAST(vm, arena, tree.pair->cdr.pair->car);
     return ret;
 }
 
-ASTMakeObject makeObjectToAST(ArenaAllocator *arena, Value tree) {
+ASTMakeObject makeObjectToAST(VM *vm, ArenaAllocator *arena, Value tree) {
     ASTMakeObject ret;
     if (tree.type != V_CONS_PAIR) {
         fprintf(stderr, "ERROR: make-object's argument has to be an associative list\n");
@@ -283,12 +305,12 @@ ASTMakeObject makeObjectToAST(ArenaAllocator *arena, Value tree) {
     }
     resize(&ret.slots, length(tree));
     for (size_t i = 0; tree.pair; ++i, tree = tree.pair->cdr) {
-        ret.slots[i] = makeObjectSlot(arena, tree.pair->car);
+        ret.slots[i] = makeObjectSlot(vm, arena, tree.pair->car);
     }
     return ret;
 }
 
-ASTDefine defineToAST(ArenaAllocator *arena, Value tree) {
+ASTDefine defineToAST(VM *vm, ArenaAllocator *arena, Value tree) {
     ASTDefine ret;
     assert(tree.type == V_CONS_PAIR);
     assert(tree.pair);
@@ -299,11 +321,11 @@ ASTDefine defineToAST(ArenaAllocator *arena, Value tree) {
         assert(false);
     }
     ret.var = tree.pair->car;
-    ret.expr = exprToAST(arena, tree.pair->cdr.pair->car);
+    ret.expr = exprToAST(vm, arena, tree.pair->cdr.pair->car);
     return ret;
 }
 
-ASTLet letToAST(ArenaAllocator *arena, Value tree) {
+ASTLet letToAST(VM *vm, ArenaAllocator *arena, Value tree) {
     ASTLet ret;
     assert(tree.type == V_CONS_PAIR);
     if (length(tree) != 3) {
@@ -313,11 +335,11 @@ ASTLet letToAST(ArenaAllocator *arena, Value tree) {
     assert(firstInListIsType(tree, V_SYMBOL));
     assert(parseTreeSymCmp(tree.pair->car, "let"));
     ret.var = variableToAST(at(tree, 1));
-    ret.expr = exprToAST(arena, at(tree, 2));
+    ret.expr = exprToAST(vm, arena, at(tree, 2));
     return ret;
 }
 
-ASTSet setToAST(ArenaAllocator *arena, Value tree) {
+ASTSet setToAST(VM *vm, ArenaAllocator *arena, Value tree) {
     ASTSet ret;
     assert(tree.type == V_CONS_PAIR);
     if (length(tree) != 3) {
@@ -327,12 +349,12 @@ ASTSet setToAST(ArenaAllocator *arena, Value tree) {
     assert(firstInListIsType(tree, V_SYMBOL));
     assert(parseTreeSymCmp(tree.pair->car, "set!"));
     ret.var = variableToAST(at(tree, 1));
-    ret.expr = exprToAST(arena, at(tree, 2));
+    ret.expr = exprToAST(vm, arena, at(tree, 2));
     return ret;
 }
 
 
-ASTNode *exprToAST(ArenaAllocator *arena, Value tree) {
+ASTNode *exprToAST(VM *vm, ArenaAllocator *arena, Value tree) {
     ASTNode *ret = 0;
     switch (tree.type) {
         case V_DOUBLE: {
@@ -354,27 +376,32 @@ ASTNode *exprToAST(ArenaAllocator *arena, Value tree) {
             if (firstInListIsType(tree, V_SYMBOL) &&
                 parseTreeSymCmp(tree.pair->car, "lambda")) {
                 ASTLambda *c = alloc<ASTLambda>(arena);
-                *c = lambdaToAST(arena, tree);
+                *c = lambdaToAST(vm, arena, tree);
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        parseTreeSymCmp(tree.pair->car, "if")) {
                 ASTIf *c = alloc<ASTIf>(arena);
-                *c = ifToAST(arena, tree);
+                *c = ifToAST(vm, arena, tree);
+                ret = c;
+            } else if (firstInListIsType(tree, V_SYMBOL) &&
+                       parseTreeSymCmp(tree.pair->car, "defmacro")) {
+                ASTDefmacro *c = alloc<ASTDefmacro>(arena);
+                *c = defmacroToAST(vm, arena, tree);
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        parseTreeSymCmp(tree.pair->car, "let")) {
                 ASTLet *c = alloc<ASTLet>(arena);
-                *c = letToAST(arena, tree);
+                *c = letToAST(vm, arena, tree);
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        parseTreeSymCmp(tree.pair->car, "set!")) {
                 ASTSet *c = alloc<ASTSet>(arena);
-                *c = setToAST(arena, tree);
+                *c = setToAST(vm, arena, tree);
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        parseTreeSymCmp(tree.pair->car, "scope")) {
                 ASTBody *c = alloc<ASTBody>(arena);
-                *c = bodyToAST(arena, tree.pair->cdr);
+                *c = bodyToAST(vm, arena, tree.pair->cdr);
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        parseTreeSymCmp(tree.pair->car, "define")) {
@@ -383,7 +410,7 @@ ASTNode *exprToAST(ArenaAllocator *arena, Value tree) {
                     assert(false);
                 }
                 ASTDefine *c = alloc<ASTDefine>(arena);
-                *c = defineToAST(arena, tree.pair->cdr);
+                *c = defineToAST(vm, arena, tree.pair->cdr);
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        parseTreeSymCmp(tree.pair->car, "quote")) {
@@ -400,11 +427,11 @@ ASTNode *exprToAST(ArenaAllocator *arena, Value tree) {
                     assert(false);
                 }
                 ASTMakeObject *c = alloc<ASTMakeObject>(arena);
-                *c = makeObjectToAST(arena, at(tree, 1));
+                *c = makeObjectToAST(vm, arena, at(tree, 1));
                 ret = c;
             } else {
                 ASTCall *c = alloc<ASTCall>(arena);
-                *c = callToAST(arena, tree);
+                *c = callToAST(vm, arena, tree);
                 ret = c;
             }
         } break;
@@ -416,12 +443,12 @@ ASTNode *exprToAST(ArenaAllocator *arena, Value tree) {
     return ret;
 }
 
-ASTBody bodyToAST(ArenaAllocator *arena, Value tree) {
+ASTBody bodyToAST(VM *vm, ArenaAllocator *arena, Value tree) {
     assert(tree.type == V_CONS_PAIR);
     ASTBody ret;
     while (tree.pair) {
         assert(tree.type == V_CONS_PAIR);
-        add(&ret.body, exprToAST(arena, tree.pair->car));
+        add(&ret.body, exprToAST(vm, arena, tree.pair->car));
         tree = tree.pair->cdr;
     }
     return ret;
@@ -453,7 +480,7 @@ Value compileString(VM *vm, char *prog, bool verbose) {
                 printValue(getC(vm, currTree).car);
                 printf("\n\n");
             }
-            node = exprToAST(&arena, getC(vm, currTree).car);
+            node = exprToAST(vm, &arena, getC(vm, currTree).car);
             if (verbose) {
                 node->traverse();
             }
@@ -1139,4 +1166,54 @@ Value ASTList::getRegister(VM *vm, Scope scope,
 
 void ASTList::freeRegister(Scope scope) {
     freeReg(scope, reg.regOrConstant);
+}
+
+ASTDefmacro::ASTDefmacro() : ASTNode(ASTT_DEFMACRO, false) {}
+void ASTDefmacro::traverse() {
+    printf("Defmacro %s (\n", variable.sym.str);
+    argList.traverse();
+    body.traverse();
+    printf(")\n");
+};
+
+void ASTDefmacro::emit(VM *vm, Scope scope,
+                     Object *valueToConstantSlot) {
+    // create new func and stuffs, add the new func to the
+    // constant table(?), load the constant.
+    
+    Object newSymToReg;
+    DynamicArray<size_t> newFreeRegisters;
+    Scope newScope = {size(&vm->funcProtos), &scope, &newSymToReg,
+                      &newFreeRegisters};
+    add(&vm->funcProtos, FunctionPrototype());
+    size_t localProtoID =
+        size(&vm->funcProtos[scope.protoID].subFuncProtoIDs);
+    add(&vm->funcProtos[scope.protoID].subFuncProtoIDs,
+        newScope.protoID);
+    //newSymToReg.parent = symToReg;
+    Object newValueToConstantSlot;
+    argList.emit(vm, newScope, &newValueToConstantSlot);
+    body.emit(vm, newScope, &newValueToConstantSlot);
+    if (body.hasReg) {
+        Value retReg = body.getRegister(vm, newScope,
+                                        valueToConstantSlot);
+        addR(&vm->funcProtos[newScope.protoID],
+             OP_RETURN, retReg.regOrConstant);
+    } else {
+        fprintf(stderr, "ERROR: macro has to return a value\n");
+        assert(false);
+        //addN(&vm->funcProtos[newScope.protoID], OP_RETURN_UNDEF);
+    }
+    Value mac = {V_FUNCTION};
+    mac.func = allocFunction(vm, &vm->funcProtos[newScope.protoID]);
+    set(vm, &vm->macros, variable, mac);
+}
+
+Value ASTDefmacro::getRegister(VM *vm, Scope scope,
+                             Object *valueToConstantSlot) {
+    fprintf(stderr, "ERROR: defmacro can't be used as an expression\n");
+    assert(false);
+}
+
+void ASTDefmacro::freeRegister(Scope scope) {
 }
