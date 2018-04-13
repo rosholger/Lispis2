@@ -52,8 +52,8 @@ struct ArenaAllocator {
 struct ASTNode {
     ASTNodeType type;
     bool hasReg;
-    size_t line = 0;
-    size_t column = 0;
+    size_t line;
+    size_t column;
     ASTNode(ASTNodeType t, bool b);
     virtual void traverse(VM *vm) = 0;
     virtual void emit(VM *vm, Scope scope) = 0;

@@ -1937,5 +1937,6 @@ void setLineInfo(VM *vm, Value value, size_t line, size_t column) {
 
 LineInfo getLineInfo(Value value) {
     assert(value.type == V_CONS_PAIR);
+    assert(value.pair);
     return *value.pair->lineInfo;
 }
