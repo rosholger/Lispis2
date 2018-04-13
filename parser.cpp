@@ -11,8 +11,6 @@ void eatWhiteSpace(LexState *state) {
            state->prog[state->pos]) {
         if (state->prog[state->pos] == ';') {
             state->pos += strcspn(state->prog+state->pos, "\n");
-            state->line++;
-            state->column = 0;
         } else {
             if (state->prog[state->pos] == '\n') {
                 state->line++;

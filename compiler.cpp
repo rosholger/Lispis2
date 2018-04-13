@@ -48,7 +48,7 @@ Value allocConstant(FunctionPrototype *func, Value val) {
     return ret;
 }
 
-void addRRR(FunctionPrototype *func, OpCode op,
+void addRRR(FunctionPrototype *func, OpCode op, size_t line,
             uint8 a, uint8 b, uint8 c) {
     OpCode assembledOp = (OpCode)((op << (bitsize(OpCode) -
                                           bitsize(uint8))) |
@@ -59,25 +59,31 @@ void addRRR(FunctionPrototype *func, OpCode op,
                                   (((OpCode)(c)) << (bitsize(OpCode) -
                                                      bitsize(uint8)*4)));
     add(&func->code, assembledOp);
+    add(&func->lines, line);
 }
 
-void addRI(FunctionPrototype *func, OpCode op, uint8 reg, uint32 immediateID) {
+void addRI(FunctionPrototype *func, OpCode op, size_t line,
+           uint8 reg, uint32 immediateID) {
     OpCode assembledOp = (OpCode)((op << (bitsize(OpCode) -
                                           bitsize(uint8))) |
                                   (((OpCode)(reg)) << (bitsize(OpCode) -
                                                        bitsize(uint8)*2)) |
                                   immediateID);
     add(&func->code, assembledOp);
+    add(&func->lines, line);
 }
 
-void addI(FunctionPrototype *func, OpCode op, uint32 immediateID) {
+void addI(FunctionPrototype *func, OpCode op, size_t line,
+          uint32 immediateID) {
     OpCode assembledOp = (OpCode)((op << (bitsize(OpCode) -
                                           bitsize(uint8))) |
                                   immediateID);
     add(&func->code, assembledOp);
+    add(&func->lines, line);
 }
 
-void addRR(FunctionPrototype *func, OpCode op, uint8 a, uint8 b) {
+void addRR(FunctionPrototype *func, OpCode op, size_t line,
+           uint8 a, uint8 b) {
     OpCode assembledOp = (OpCode)((op << (bitsize(OpCode) -
                                           bitsize(uint8))) |
                                   (((OpCode)(a)) << (bitsize(OpCode) -
@@ -85,24 +91,28 @@ void addRR(FunctionPrototype *func, OpCode op, uint8 a, uint8 b) {
                                   (((OpCode)(b)) << (bitsize(OpCode) -
                                                      bitsize(uint8)*3)));
     add(&func->code, assembledOp);
+    add(&func->lines, line);
 }
 
-void addR(FunctionPrototype *func, OpCode op, uint8 reg) {
+void addR(FunctionPrototype *func, OpCode op, size_t line,
+          uint8 reg) {
     OpCode assembledOp = (OpCode)((op << (bitsize(OpCode) -
                                           bitsize(uint8))) |
                                   (((OpCode)(reg)) << (bitsize(OpCode) -
                                                        bitsize(uint8)*2)));
     add(&func->code, assembledOp);
+    add(&func->lines, line);
 }
 
-void addN(FunctionPrototype *func, OpCode op) {
+void addN(FunctionPrototype *func, OpCode op, size_t line) {
     OpCode assembledOp = (OpCode)((op << (bitsize(OpCode) -
                                           bitsize(uint8))));
     add(&func->code, assembledOp);
+    add(&func->lines, line);
 }
 
-void patchRS(FunctionPrototype *func, size_t pos, OpCode op, uint8 reg,
-             int32 immediate) {
+void patchRS(FunctionPrototype *func, size_t pos, OpCode op,
+             uint8 reg, int32 immediate) {
 
     OpCode assembledOp = (OpCode)((op << (bitsize(OpCode) -
                                           bitsize(uint8))) |
@@ -218,15 +228,14 @@ ASTCall callToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
 // If the arglist is a symbol we cant get the lineinfo from the value
 ASTArgList argListToAST(VM *vm, Handle tree, size_t line, size_t column) {
     ASTArgList ret;
+    // We dont use line/column of argList, since it does not generate
+    // any code
     if (type(vm, tree) == V_SYMBOL) {
-        ret.line = line;
-        ret.column = column;
         ret.vararg = true;
         add(&ret.args, variableToAST(get(vm, tree), ret.line,
                                      ret.column));
         free(vm, tree);
     } else {
-        setDebugInfo(vm, get(vm, tree), ret);
         ret.vararg = false;
         while (type(vm, tree) == V_CONS_PAIR && get(vm, tree).pair) {
             if (get(vm, tree).pair->car.type != V_SYMBOL) {
@@ -308,6 +317,7 @@ ASTBody bodyToAST(VM *vm, ArenaAllocator *arena, Handle tree);
 
 ASTLambda lambdaToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
     ASTLambda ret;
+    ret.nameSymbol = intern(vm, "anonymous");
     setDebugInfo(vm, get(vm, tree), ret);
     ret.argList = argListToAST(vm,
                                reserve(vm, get(vm, tree).pair->car),
@@ -353,6 +363,11 @@ ASTNode *quotedToAST(ArenaAllocator *arena, Value tree, size_t line,
         case V_DOUBLE: {
             ASTDouble *c = alloc<ASTDouble>(arena);
             *c = doubleToAST(tree, line, column);
+            ret = c;
+        } break;
+        case V_STRING: {
+            ASTString *c = alloc<ASTString>(arena);
+            *c = stringToAST(tree, line, column);
             ret = c;
         } break;
         case V_BOOLEAN: {
@@ -452,6 +467,7 @@ ASTDefine defineToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
         Handle lambdaPart = reserve(vm, get(vm, tree).pair->cdr);
         *p = lambdaToAST(vm, arena, lambdaPart);
         setDebugInfo(vm, get(vm, tree), *p);
+        p->nameSymbol = ret.var.sym;
         ret.expr = p;
     } else {
         error(vm, get(vm, tree),
@@ -477,6 +493,7 @@ ASTLet letToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
                     get(vm, tree).pair->cdr.pair->cdr);
         *p = lambdaToAST(vm, arena, lambdaPart);
         setDebugInfo(vm, get(vm, tree), *p);
+        p->nameSymbol = ret.var.symbol.sym;
         ret.expr = p;
     } else {
         error(vm, get(vm, tree),
@@ -704,7 +721,6 @@ ASTNode *exprToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
 ASTBody bodyToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
     assert(type(vm, tree) == V_CONS_PAIR);
     ASTBody ret;
-    // FIXME
     setDebugInfo(vm, get(vm, tree), ret);
     while (get(vm, tree).pair) {
         assert(type(vm, tree) == V_CONS_PAIR);
@@ -739,14 +755,15 @@ void patchGoStatements(VM *vm, Scope scope) {
 }
 
 // WARNING!!! adds stuff to the current scope!!
-#define allocScope(s, prot, par)                        \
+#define allocScope(s, par, line)                        \
     Object _newSymToReg;                                \
     DynamicArray<size_t> _newFreeRegisters;             \
     Object _newLabelPositions;                          \
     DynamicArray<ObjectSlot> _newGoLabelPositions;      \
     Object _newValueToConstantSlot;                     \
-    s.protoID = prot;                                   \
+    s.protoID = size(&vm->funcProtos);                  \
     add(&vm->funcProtos, FunctionPrototype());          \
+    vm->funcProtos[s.protoID].definedOnLine = line;     \
     s.parent = par;                                     \
     s.symToReg = &_newSymToReg;                         \
     s.freeRegisters = &_newFreeRegisters;               \
@@ -754,10 +771,18 @@ void patchGoStatements(VM *vm, Scope scope) {
     s.goLabelPositions = &_newGoLabelPositions;         \
     s.valueToConstantSlot = &_newValueToConstantSlot
 
-Value compileString(VM *vm, char *prog, bool verbose) {
+Value compileString(VM *vm, char *prog, bool verbose,
+                        const char *filePath) {
     LexState lex = initLexerState(vm, prog);
     Scope topScope;
-    allocScope(topScope, size(&vm->funcProtos), 0); 
+    allocScope(topScope, 0, 0); 
+    if (filePath) {
+        vm->funcProtos[topScope.protoID].nameSymbol =
+            intern(vm, filePath);
+    } else {
+        vm->funcProtos[topScope.protoID].nameSymbol =
+            intern(vm, "anonymous");
+    }
     ASTNode *node = 0;
     ArenaAllocator arena;
     {
@@ -798,12 +823,18 @@ Value compileString(VM *vm, char *prog, bool verbose) {
         fprintf(stderr, "ERROR: Empty 'file' is not allowed\n");
         assert(false);
     }
+    size_t returnLine = 0;
+    if (size(&vm->funcProtos[topScope.protoID].lines)) {
+        returnLine = last(&vm->funcProtos[topScope.protoID].lines);
+    }
     if (node->hasReg) {
         Value retReg = node->getRegister(vm, topScope);
-        addR(&vm->funcProtos[topScope.protoID],
-             OP_RETURN, retReg.regOrConstant);
+        addR(&vm->funcProtos[topScope.protoID], OP_RETURN,
+             returnLine,
+             retReg.regOrConstant);
     } else {
-        addN(&vm->funcProtos[topScope.protoID], OP_RETURN_UNDEF);
+        addN(&vm->funcProtos[topScope.protoID], OP_RETURN_UNDEF,
+             returnLine);
     }
     patchGoStatements(vm, topScope);
     freeArena(&arena);
@@ -822,7 +853,7 @@ Value compileFile(VM *vm, const char *path, bool verbose) {
     prog[length] = 0;
     fread(prog, sizeof(char), length, file);
     fclose(file);
-    return compileString(vm, prog, verbose);
+    return compileString(vm, prog, verbose, path);
 }
 
 
@@ -923,8 +954,8 @@ void ASTSymbol::emit(VM *vm, Scope scope) {
         set(vm, scope.valueToConstantSlot, sym, k);
     }
     reg = allocReg(&vm->funcProtos[scope.protoID], scope);
-    addRI(&vm->funcProtos[scope.protoID], OP_LOADK, reg.regOrConstant,
-          k.regOrConstant);
+    addRI(&vm->funcProtos[scope.protoID], OP_LOADK, line,
+          reg.regOrConstant, k.regOrConstant);
 }
 Value ASTSymbol::getRegister(VM *vm, Scope scope) {
     return reg;
@@ -954,7 +985,7 @@ void ASTVariable::emit(VM *vm, Scope scope) {
         uint8 upvalueIdx;
         if (getUpvalue(vm, scope, symbol, &upvalueIdx)) {
             // Upval
-            addRI(&vm->funcProtos[scope.protoID], OP_GET_UPVALUE,
+            addRI(&vm->funcProtos[scope.protoID], OP_GET_UPVALUE, line,
                   reg.regOrConstant, upvalueIdx);
         } else {
             // Global
@@ -966,7 +997,7 @@ void ASTVariable::emit(VM *vm, Scope scope) {
                                   symbol);
                 set(vm, scope.valueToConstantSlot, symbol, k);
             }
-            addRI(&vm->funcProtos[scope.protoID], OP_GET_GLOBAL,
+            addRI(&vm->funcProtos[scope.protoID], OP_GET_GLOBAL, line,
                   reg.regOrConstant, k.regOrConstant);
         }
     } else {
@@ -1046,7 +1077,8 @@ void ASTLambda::emit(VM *vm, Scope scope) {
     // constant table(?), load the constant.
     
     Scope newScope;
-    allocScope(newScope, size(&vm->funcProtos), &scope);
+    allocScope(newScope, &scope, line);
+    vm->funcProtos[newScope.protoID].nameSymbol = nameSymbol;
     size_t localProtoID =
         size(&vm->funcProtos[scope.protoID].subFuncProtoIDs);
     add(&vm->funcProtos[scope.protoID].subFuncProtoIDs,
@@ -1056,13 +1088,15 @@ void ASTLambda::emit(VM *vm, Scope scope) {
     body.emit(vm, newScope);
     if (body.hasReg) {
         Value retReg = body.getRegister(vm, newScope);
-        addR(&vm->funcProtos[newScope.protoID],
-             OP_RETURN, retReg.regOrConstant);
+        addR(&vm->funcProtos[newScope.protoID], OP_RETURN,
+             last(&body.body)->line,
+             retReg.regOrConstant); // ugly
     } else {
-        addN(&vm->funcProtos[newScope.protoID], OP_RETURN_UNDEF);
+        addN(&vm->funcProtos[newScope.protoID], OP_RETURN_UNDEF,
+             last(&body.body)->line);
     }
     reg = allocReg(&vm->funcProtos[scope.protoID], scope);
-    addRI(&vm->funcProtos[scope.protoID], OP_CREATE_FUNC,
+    addRI(&vm->funcProtos[scope.protoID], OP_CREATE_FUNC, line,
           reg.regOrConstant,
           localProtoID);
     patchGoStatements(vm, newScope);
@@ -1095,14 +1129,16 @@ void ASTCall::emit(VM *vm, Scope scope) {
         args[i]->emit(vm, scope);
         add(&argRegs, args[i]->getRegister(vm, scope));
     }
-    addR(&vm->funcProtos[scope.protoID], OP_SETUP_CALL, calleeReg.regOrConstant);
+    addR(&vm->funcProtos[scope.protoID], OP_SETUP_CALL, line,
+         calleeReg.regOrConstant);
     for (size_t i = 0; i < size(&argRegs); ++i) {
-        addR(&vm->funcProtos[scope.protoID], OP_PUSH_ARG,
+        addR(&vm->funcProtos[scope.protoID], OP_PUSH_ARG, line,
              argRegs[i].regOrConstant);
         args[i]->freeRegister(scope);
     }
     returnReg = allocReg(&vm->funcProtos[scope.protoID], scope);
-    addR(&vm->funcProtos[scope.protoID], OP_CALL, returnReg.regOrConstant);
+    addR(&vm->funcProtos[scope.protoID], OP_CALL, line,
+         returnReg.regOrConstant);
 }
 
 Value ASTCall::getRegister(VM *vm, Scope scope) {
@@ -1130,8 +1166,8 @@ void ASTDouble::emit(VM *vm, Scope scope) {
         set(vm, scope.valueToConstantSlot, v, k);
     }
     reg = allocReg(&vm->funcProtos[scope.protoID], scope);
-    addRI(&vm->funcProtos[scope.protoID], OP_LOADK, reg.regOrConstant,
-          k.regOrConstant);
+    addRI(&vm->funcProtos[scope.protoID], OP_LOADK, line,
+          reg.regOrConstant, k.regOrConstant);
 }
 
 Value ASTDouble::getRegister(VM *vm, Scope scope) {
@@ -1160,8 +1196,8 @@ void ASTBoolean::emit(VM *vm, Scope scope) {
         set(vm, scope.valueToConstantSlot, v, k);
     }
     reg = allocReg(&vm->funcProtos[scope.protoID], scope);
-    addRI(&vm->funcProtos[scope.protoID], OP_LOADK, reg.regOrConstant,
-          k.regOrConstant);
+    addRI(&vm->funcProtos[scope.protoID], OP_LOADK, line,
+          reg.regOrConstant, k.regOrConstant);
 }
 
 Value ASTBoolean::getRegister(VM *vm, Scope scope) {
@@ -1188,8 +1224,8 @@ void ASTString::emit(VM *vm, Scope scope) {
         set(vm, scope.valueToConstantSlot, value, k);
     }
     reg = allocReg(&vm->funcProtos[scope.protoID], scope);
-    addRI(&vm->funcProtos[scope.protoID], OP_LOADK, reg.regOrConstant,
-          k.regOrConstant);
+    addRI(&vm->funcProtos[scope.protoID], OP_LOADK, line,
+          reg.regOrConstant, k.regOrConstant);
 }
 
 Value ASTString::getRegister(VM *vm, Scope scope) {
@@ -1216,13 +1252,14 @@ void ASTMakeObject::traverse(VM *vm) {
 
 void ASTMakeObject::emit(VM *vm, Scope scope) {
     reg = allocReg(&vm->funcProtos[scope.protoID], scope);
-    addR(&vm->funcProtos[scope.protoID], OP_MAKE_OBJECT, reg.regOrConstant);
+    addR(&vm->funcProtos[scope.protoID], OP_MAKE_OBJECT, line,
+         reg.regOrConstant);
     for (size_t i = 0; i < size(&slots); ++i) {
         slots[i].key->emit(vm, scope);
         slots[i].value->emit(vm, scope);
         Value keyReg = slots[i].key->getRegister(vm, scope);
         Value valueReg = slots[i].value->getRegister(vm, scope);
-        addRRR(&vm->funcProtos[scope.protoID], OP_SET_OBJECT_SLOT,
+        addRRR(&vm->funcProtos[scope.protoID], OP_SET_OBJECT_SLOT, line,
                reg.regOrConstant,
                keyReg.regOrConstant,
                valueReg.regOrConstant);
@@ -1261,7 +1298,7 @@ void ASTDefine::emit(VM *vm, Scope scope) {
         k = allocConstant(&vm->funcProtos[scope.protoID], var);
         set(vm, scope.valueToConstantSlot, var, k);
     }
-    addRI(&vm->funcProtos[scope.protoID], OP_DEFINE_GLOBAL,
+    addRI(&vm->funcProtos[scope.protoID], OP_DEFINE_GLOBAL, line,
           expr->getRegister(vm, scope).regOrConstant,
           k.regOrConstant);
     expr->freeRegister(scope);
@@ -1294,31 +1331,31 @@ void ASTIf::emit(VM *vm, Scope scope) {
     pred->emit(vm, scope);
     pred->freeRegister(scope);
     size_t ifBranchPos = getPos(&vm->funcProtos[scope.protoID]);
-    addN(&vm->funcProtos[scope.protoID], OP_DUMMY);
+    addN(&vm->funcProtos[scope.protoID], OP_DUMMY, line);
     int64 trueStart = getPos(&vm->funcProtos[scope.protoID]);
     trueBranch->emit(vm, scope);
     trueBranch->freeRegister(scope);
     if (trueBranch->hasReg) {
-        addRR(&vm->funcProtos[scope.protoID], OP_MOVE,
+        addRR(&vm->funcProtos[scope.protoID], OP_MOVE, line,
               reg.regOrConstant,
               trueBranch->getRegister(vm, scope).regOrConstant);
     } else {
-        addR(&vm->funcProtos[scope.protoID], OP_LOAD_UNDEF,
+        addR(&vm->funcProtos[scope.protoID], OP_LOAD_UNDEF, line,
              reg.regOrConstant);
     }
     size_t trueBranchPos = getPos(&vm->funcProtos[scope.protoID]);
     int64 trueBranchEnd = getPos(&vm->funcProtos[scope.protoID]);
     if (falseBranch) {
-        addN(&vm->funcProtos[scope.protoID], OP_DUMMY);
+        addN(&vm->funcProtos[scope.protoID], OP_DUMMY, line);
         trueBranchEnd = getPos(&vm->funcProtos[scope.protoID]);
         falseBranch->emit(vm, scope);
         falseBranch->freeRegister(scope);
         if (falseBranch->hasReg) {
-            addRR(&vm->funcProtos[scope.protoID], OP_MOVE,
+            addRR(&vm->funcProtos[scope.protoID], OP_MOVE, line,
                   reg.regOrConstant,
                   falseBranch->getRegister(vm, scope).regOrConstant);
         } else {
-            addR(&vm->funcProtos[scope.protoID], OP_LOAD_UNDEF,
+            addR(&vm->funcProtos[scope.protoID], OP_LOAD_UNDEF, line,
                  reg.regOrConstant);
         }
         int64 endPos = getPos(&vm->funcProtos[scope.protoID]);
@@ -1354,7 +1391,7 @@ void ASTLet::traverse(VM *vm) {
 void ASTLet::emit(VM *vm, Scope scope) {
     var.setRegister(vm, scope);
     expr->emit(vm, scope);
-    addRR(&vm->funcProtos[scope.protoID], OP_MOVE,
+    addRR(&vm->funcProtos[scope.protoID], OP_MOVE, line,
           var.getRegister(vm, scope).regOrConstant,
           expr->getRegister(vm, scope).regOrConstant);
     expr->freeRegister(scope);
@@ -1393,7 +1430,7 @@ void ASTSet::emit(VM *vm, Scope scope) {
         uint8 upvalueIdx;
         if (getUpvalue(vm, scope, var.symbol, &upvalueIdx)) {
             // Upval
-            addRI(&vm->funcProtos[scope.protoID], OP_SET_UPVALUE,
+            addRI(&vm->funcProtos[scope.protoID], OP_SET_UPVALUE, line,
                   exprReg, upvalueIdx);
         } else {
             // Global
@@ -1405,12 +1442,12 @@ void ASTSet::emit(VM *vm, Scope scope) {
                                   var.symbol);
                 set(vm, scope.valueToConstantSlot, var.symbol, k);
             }
-            addRI(&vm->funcProtos[scope.protoID], OP_SET_GLOBAL,
+            addRI(&vm->funcProtos[scope.protoID], OP_SET_GLOBAL, line,
                   exprReg, k.regOrConstant);
         }
     } else {
         // Local
-        addRR(&vm->funcProtos[scope.protoID], OP_MOVE,
+        addRR(&vm->funcProtos[scope.protoID], OP_MOVE, line,
               varReg.regOrConstant, exprReg);
     }
     expr->freeRegister(scope);
@@ -1454,13 +1491,13 @@ void ASTList::emit(VM *vm, Scope scope) {
         if (dotted) {
             assert(size(&elems) > 2);
             elems[start]->emit(vm, scope);
-            addRR(&vm->funcProtos[scope.protoID], OP_MOVE,
+            addRR(&vm->funcProtos[scope.protoID], OP_MOVE, line,
                   headReg,
                   elems[start]->getRegister(vm, scope).regOrConstant);
             elems[start]->freeRegister(scope);
             start--;
         } else {
-            addR(&vm->funcProtos[scope.protoID], OP_LOAD_NULL,
+            addR(&vm->funcProtos[scope.protoID], OP_LOAD_NULL, line,
                  headReg);
         }
         for (int i = start; i >= 0; --i) {
@@ -1471,17 +1508,15 @@ void ASTList::emit(VM *vm, Scope scope) {
                 elems[i]->getRegister(vm, scope).regOrConstant;
             headReg = allocReg(&vm->funcProtos[scope.protoID],
                                scope).regOrConstant;
-            addRRR(&vm->funcProtos[scope.protoID], OP_CONS,
-                   headReg,
-                   carReg,
-                   cdrReg);
+            addRRR(&vm->funcProtos[scope.protoID], OP_CONS, line,
+                   headReg, carReg, cdrReg);
             elems[i]->freeRegister(scope);
         }
         reg.type = V_REG_OR_CONSTANT;
         reg.regOrConstant = headReg;
     } else {
         reg = allocReg(&vm->funcProtos[scope.protoID], scope);
-        addR(&vm->funcProtos[scope.protoID], OP_LOAD_NULL,
+        addR(&vm->funcProtos[scope.protoID], OP_LOAD_NULL, line,
              reg.regOrConstant);
     }
 }
@@ -1510,7 +1545,7 @@ void ASTDefmacro::emit(VM *vm, Scope scope) {
     // constant table(?), load the constant.
     
     Scope newScope;
-    allocScope(newScope, size(&vm->funcProtos), &scope);
+    allocScope(newScope, &scope, line);
     size_t localProtoID =
         size(&vm->funcProtos[scope.protoID].subFuncProtoIDs);
     add(&vm->funcProtos[scope.protoID].subFuncProtoIDs,
@@ -1521,7 +1556,7 @@ void ASTDefmacro::emit(VM *vm, Scope scope) {
     if (body.hasReg) {
         Value retReg = body.getRegister(vm, newScope);
         addR(&vm->funcProtos[newScope.protoID],
-             OP_RETURN, retReg.regOrConstant);
+             OP_RETURN, line, retReg.regOrConstant);
     } else {
         fprintf(stderr, "ERROR at %lu:%lu: macro has to "
                 "return a value\n", body.line, body.column);
@@ -1542,133 +1577,6 @@ Value ASTDefmacro::getRegister(VM *vm, Scope scope) {
 
 void ASTDefmacro::freeRegister(Scope scope) {
 }
-
-#if 0
-
-ASTFor::ASTFor() : ASTNode(ASTT_FOR, false) {}
-
-void ASTFor::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("(for\n");
-    printf("(\n");
-    var.traverse(vm);
-    printf("\n");
-    iterExpr->traverse(vm);
-    printf(")\n");
-    body.traverse(vm);
-    printf(")\n");
-}
-
-void ASTFor::emit(VM *vm, Scope scope) {
-    var.setRegister(vm, scope);
-    Value iterReg = allocReg(&vm->funcProtos[scope.protoID], scope);
-    iterExpr->emit(vm, scope, valueToConstantSlot);
-    addRR(&vm->funcProtos[scope.protoID], OP_MOVE,
-          iterReg.regOrConstant,
-          iterExpr->getRegister(vm, scope,
-                            valueToConstantSlot).regOrConstant);
-    iterExpr->freeRegister(scope);
-
-    // We assume that get-slot does not change during the
-    // for loop
-    Value getSlotReg = allocReg(&vm->funcProtos[scope.protoID], scope);
-    {
-        Value getSlotSymbol = {V_SYMBOL};
-        getSlotSymbol.sym = intern(vm, "get-slot");
-        Value k;
-        if (keyExists(valueToConstantSlot, getSlotSymbol)) {
-            k = get(valueToConstantSlot, getSlotSymbol);
-        } else {
-            k = allocConstant(&vm->funcProtos[scope.protoID],
-                              getSlotSymbol);
-            set(vm, valueToConstantSlot, getSlotSymbol, k);
-        }
-        addRI(&vm->funcProtos[scope.protoID], OP_GET_GLOBAL,
-              getSlotReg.regOrConstant, k.regOrConstant);
-    }
-
-    // Get alive symbol
-    Value aliveReg = allocReg(&vm->funcProtos[scope.protoID], scope);
-    {
-        Value aliveSymbol = {V_SYMBOL};
-        Value k;
-        aliveSymbol.sym = intern(vm, "alive");
-        if (keyExists(valueToConstantSlot, aliveSymbol)) {
-            k = get(valueToConstantSlot, aliveSymbol);
-        } else {
-            k = allocConstant(&vm->funcProtos[scope.protoID],
-                              aliveSymbol);
-            set(vm, valueToConstantSlot, aliveSymbol, k);
-        }
-        addRI(&vm->funcProtos[scope.protoID], OP_LOADK,
-              aliveReg.regOrConstant,
-              k.regOrConstant);
-    }
-
-    // Get update symbol
-    Value updateReg = allocReg(&vm->funcProtos[scope.protoID], scope);
-    {
-        Value updateSymbol = {V_SYMBOL};
-        Value k;
-        updateSymbol.sym = intern(vm, "update");
-        if (keyExists(valueToConstantSlot, updateSymbol)) {
-            k = get(valueToConstantSlot, updateSymbol);
-        } else {
-            k = allocConstant(&vm->funcProtos[scope.protoID],
-                              updateSymbol);
-            set(vm, valueToConstantSlot, updateSymbol, k);
-        }
-        addRI(&vm->funcProtos[scope.protoID], OP_LOADK,
-              updateReg.regOrConstant,
-              k.regOrConstant);
-    }
-
-    size_t loopPos = getPos(&vm->funcProtos[scope.protoID]);
-    addN(&vm->funcProtos[scope.protoID], OP_DUMMY);
-    // Check if ended
-    {
-        addR(&vm->funcProtos[scope.protoID], OP_SETUP_CALL,
-             getSlotReg.regOrConstant);
-        addR(&vm->funcProtos[scope.protoID], OP_PUSH_ARG,
-             iterReg.regOrConstant);
-        addR(&vm->funcProtos[scope.protoID], OP_PUSH_ARG,
-             endedReg.regOrConstant);
-        Value resReg = allocReg(&vm->funcProtos[scope.protoID], scope);
-        addR(&vm->funcProtos[scope.protoID], OP_CALL,
-             resReg.regOrConstant);
-        // jmp to end if 
-    }
-    size_t bodyPos = getPos(&vm->funcProtos[scope.protoID]);
-    addN(&vm->funcProtos[scope.protoID], OP_DUMMY);
-    
-    addR(&vm->funcProtos[scope.protoID], OP_SETUP_CALL,
-         getSlotReg.regOrConstant);
-    addR(&vm->funcProtos[scope.protoID], OP_PUSH_ARG,
-         iterReg.regOrConstant);
-    addR(&vm->funcProtos[scope.protoID], OP_PUSH_ARG,
-         updateReg.regOrConstant);
-    Value updateReg = allocReg(&vm->funcProtos[scope.protoID], scope);
-    addR(&vm->funcProtos[scope.protoID], OP_CALL,
-         updateReg.regOrConstant);
-
-    addR(&vm->funcProtos[scope.protoID], OP_SETUP_CALL,
-         updateReg.regOrConstant);
-    addR(&vm->funcProtos[scope.protoID], OP_PUSH_ARG,
-         iterReg.regOrConstant);
-    addR(&vm->funcProtos[scope.protoID], OP_CALL,
-         var.getRegister(vm, scope, valueToConstantSlot).regOrConstant);
-    // Create new scope
-    body.emit(vm, scope, valueToConstantSlot);
-    
-}
-
-Value ASTFor::getRegister(VM *vm, Scope scope) {
-    return var.getRegister(vm, scope, valueToConstantSlot);
-}
-
-void ASTFor::freeRegister(Scope scope) {
-}
-#endif
 
 ASTLabel::ASTLabel() : ASTNode(ASTT_LABEL, false) {}
 void ASTLabel::traverse(VM *vm) {
@@ -1710,7 +1618,7 @@ void ASTGo::emit(VM *vm, Scope scope) {
     codePos.codePosition = getPos(&vm->funcProtos[scope.protoID]);
     goSlot.value = codePos;
     add(scope.goLabelPositions, goSlot);
-    addN(&vm->funcProtos[scope.protoID], OP_DUMMY);
+    addN(&vm->funcProtos[scope.protoID], OP_DUMMY, line);
 }
 
 Value ASTGo::getRegister(VM *vm, Scope scope) {

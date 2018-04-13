@@ -86,7 +86,7 @@ typedef int int32;
 typedef long long int int64;
 
 enum OpCode : uint64 {
-#define OPCODE(op) OP_ ## op,
+#define OPCODE(op, type) OP_ ## op,
 #include "opcodes.h"
 #undef OPCODE
 };
@@ -132,11 +132,14 @@ struct FunctionPrototype {
     GCObject gcObj;
     DynamicArray<Value> constants;
     DynamicArray<OpCode> code;
+    DynamicArray<size_t> lines;
     DynamicArray<size_t> subFuncProtoIDs;
     DynamicArray<UpvalueDesc> upvalues;
     //DynamicArray<FunctionPrototype *> subFunctions;
     size_t numRegs = 0;
     size_t numArgs;
+    size_t definedOnLine;
+    Symbol nameSymbol;
     bool vararg;
 };
 
@@ -407,13 +410,16 @@ Symbol popSymbol(VM *vm);
 double peekDouble(VM *vm, int idx);
 void car(VM *vm);
 void cdr(VM *vm);
+void cons(VM *vm);
 void dup(VM *vm);
 
 bool isEmptyList(VM *vm);
 bool isList(VM *vm);
+bool isDouble(VM *vm);
 
+void pushNull(VM *vm);
 void pushDouble(VM *vm, double doub);
-void pushSymbol(VM *vm, char *symstr);
+void pushSymbol(VM *vm, const char *symstr);
 void pushSymbol(VM *vm, Symbol symbol);
 void pushString(VM *vm, const char *str);
 void pushBoolean(VM *vm, bool boolean);

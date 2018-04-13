@@ -108,27 +108,24 @@
 
     prob. just a call to a C function.
 
-  + [ ] objects
+  + [\] objects
+    We just quote everything, no fancy shit
 
 + [X] quote et. al. abreviations
 
-+ [ ] make-object sugar
++ [X] make-object sugar
 
-+ [ ] get-object-slot
++ [X] get-object-slot
 
-+ [ ] get-object-slot sugar
++ [X] get-object-slot sugar
 
-+ [ ] lambda sugar
-
-  [args] -> lambda (args)
-
-+ [ ] Closures
-
++ [-] Closures
+  
   Lua style upvalues will be used.
-  WORKS!!!!
+  + [X] WORKS!!!!
   + [ ] Make a CLOSE op, like lua
 
-+ [ ] for, maybe as iterators?
++ [X] for, maybe as iterators?
 
 + [ ] Abstract char * into a stream for the parser.
 
@@ -136,9 +133,68 @@
 
 + [ ] Tune GC
   
++ [ ] Make GC grow the heap if we run out of memory
+  
+  mremap
+  
 + [ ] Maybe switch to scheme define sugar?
 
 + [ ] Make it so that forward declarations of local
   functions are not needed
   
+  Hard... would have to scan the function for let statements
+  and add them as local variables before compiling the body.
+  Would mean that
+
+  #+BEGIN_SRC lisp
+  (let a 1)
+  (lambda ()
+    (let b a)
+    (let a 2))
+  #+END_SRC
+  
+  Would be illegal, bc a would be a local variable without a value...
+  I totally see why they chose the path they did with let.
+  
 + [ ] (if false 'blah) return garbage (should prob. be undef)
+
++ [ ] switch?
+  
+  Not like CL case, more like switch in C++
+  (might be faster than an if else chain)
+  
++ [ ] possibly skip the parse stage and go straight to AST?
+
+  We are generating insane amounts of garbage when parsing, this would
+  lower it substantially.
+  
+  We would still need to be able to convert from sexp to AST
+  bc of macros though. So the *ToAST functions are not a waste of time.
+  
+  
++ [ ] need a way to tell how many frames from the last C-call we are
+
+  That is if we have the call-stack
+
+  lispisFuncA
+
+  lispisFuncB
+  
+  cFunc
+
+  lispisFuncC
+
+  (stack-depth) should return 2, not 3
+  
++ [ ] Make C functions get their arguments in logical order
+
+  This can be quite simple if we make register allocation
+  for arglists start at the right hand instead of the left hand.
+  That is if we have (a b . c) the c becomes r0, b r1 and a r2.
+  We can still evaluation arguments left to right bc register machine.
+  The only thing that gets kind of complicated is setting the arguments
+  of lispis functions called from C.
+  But the way it is now is broken anyway bc calling a
+  lispis function with the arguments from a lispis functions
+  puts them in reverse.
+  

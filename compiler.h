@@ -120,6 +120,7 @@ struct ASTLambda : ASTNode {
     ASTArgList argList;
     ASTBody body;
     Value reg;
+    Symbol nameSymbol;
     virtual void traverse(VM *vm);
     virtual void emit(VM *vm, Scope scope);
     virtual Value getRegister(VM *vm, Scope scope);
@@ -288,5 +289,6 @@ T *alloc(ArenaAllocator *arena) {
     return ret;
 }
 void freeArena(ArenaAllocator *arena);
-Value compileString(VM *vm, char *prog, bool verbose);
-Value compileFile(VM *vm, const char *path, bool verbose);
+Value compileString(VM *vm, char *prog, bool verbose = false,
+                    const char *filePath = 0);
+Value compileFile(VM *vm, const char *path, bool verbose = false);
