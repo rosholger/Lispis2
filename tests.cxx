@@ -74,19 +74,19 @@ public:
     void test2Intern() {
         {
             VM vm;
-            Symbol a1 = intern(&vm, "and");
-            Symbol o1 = intern(&vm, "or");
-            Symbol lt1 = intern(&vm, "<");
-            Symbol d1 = intern(&vm, "define");
+            intern(&vm, "and");
+            intern(&vm, "or");
+            intern(&vm, "<");
+            intern(&vm, "define");
             Symbol tf21 = intern(&vm, "testFunc2");
-            Symbol l1 = intern(&vm, "lambda");
-            Symbol b1 = intern(&vm, "b");
-            Symbol tf1 = intern(&vm, "testFunc");
+            intern(&vm, "lambda");
+            intern(&vm, "b");
+            intern(&vm, "testFunc");
             Symbol tf22 = intern(&vm, "testFunc2");
             Value v1 = {V_STRING};
-            v1.str = tf21.str;
+            v1.str = getSymbolString(&vm, tf21);
             Value v2 = {V_STRING};
-            v2.str = tf22.str;
+            v2.str = getSymbolString(&vm, tf22);
             ETS_ASSERT_EQUALS(hashValue(v1), hashValue(v2));
             ETS_ASSERT_EQUALS(tf21.id, tf22.id);
             freeVM(&vm);
@@ -160,6 +160,17 @@ public:
             ETS_ASSERT_EQUALS(b, intern(&vm, "b"));
             cdr(&vm); // '()
             ETS_ASSERT(isEmptyList(&vm));
+        }
+    }
+
+    void testVararg() {
+        VM vm = initVM(true);
+        doString(&vm,
+                 "((lambda args ((lambda (arg) arg) args)) 1)", 0, false);
+        ETS_ASSERT(isList(&vm));
+        for (size_t i = 0; i < size(&vm.funcProtos); ++i) {
+            printf("\nFunction %lu:\n", i);
+            printFuncProtoCode(&vm, &vm.funcProtos[i]);
         }
     }
 };

@@ -48,8 +48,25 @@
 + [X] set!
   
 + [X] Calling C++
+
++ [X] Globals
+  + [X] Getting globals
+  + [X] Setting globals
+    #+BEGIN_SRC C++
+    pushInt(vm, 23);
+    setGlobal(vm, intern(vm, "foo"));
+    #+END_SRC
+
++ [X] Lists, cons et. al.
+
++ [X] Macros
   
-+ [ ] make compileString not puke a bunch of debug logging when testing
++ [X] quasiquote
+  
+  but kind of broken (quasiquote is hard!)
+
+  
++ [X] make compileString not puke a bunch of debug logging when testing
   
 + [ ] intern keywords and make the ast builder use the inturned versions
   
@@ -87,13 +104,13 @@
   + [X] primitives
 
 
-  + [ ] lists
+  + [X] lists
 
     prob. just a call to a C function.
 
   + [ ] objects
 
-+ [ ] quote et. al. abreviations
++ [X] quote et. al. abreviations
 
 + [ ] make-object sugar
 
@@ -105,23 +122,11 @@
 
   [args] -> lambda (args)
 
-+ [-] Closures
++ [ ] Closures
 
   Lua style upvalues will be used.
   WORKS!!!!
   + [ ] Make a CLOSE op, like lua
-
-+ [ ] Globals
-  + [X] Getting globals
-  + [ ] Setting globals
-    #+BEGIN_SRC C++
-    pushInt(vm, 23);
-    setGlobal(vm, intern(vm, "foo"));
-    #+END_SRC
-
-+ [ ] Lists, cons et. al.
-
-+ [ ] Macros
 
 + [ ] for, maybe as iterators?
 
@@ -131,3 +136,9 @@
 
 + [ ] Tune GC
   
++ [ ] Maybe switch to scheme define sugar?
+
++ [ ] Make it so that forward declarations of local
+  functions are not needed
+  
++ [ ] (if false 'blah) return garbage (should prob. be undef)

@@ -138,7 +138,9 @@ void visitValue(VM *vm, Value *v) {
                 }
                 assert(v->pair->gcObj.type <= GC_BROKEN_HEART);
                 if (v->pair->gcObj.type == GC_BROKEN_HEART) {
+                    //fprintf(stderr, "upd %p to ", v->pair);
                     v->pair = *(ConsPair **)((&v->object->gcObj)+1);
+                    //fprintf(stderr, "%p\n", v->pair);
                 } else {
                     v->pair = (ConsPair *)copyFromTo(vm, &v->pair->gcObj,
                                                      sizeof(ConsPair));
@@ -170,18 +172,22 @@ void visitValue(VM *vm, Value *v) {
 }
 
 Upvalue *visitUpvalue(VM *vm, Upvalue *upvalue) {
-    if (upvalue->gcObj.type == GC_BROKEN_HEART) {
-        Upvalue *ret = *(Upvalue **)((&upvalue->gcObj)+1);
-        return ret;
-    } else {
-        bool shouldMoveValuePtr = (((size_t)upvalue->value) ==
-                                   ((size_t)&upvalue->closed));
-        Upvalue *ret = (Upvalue *)copyFromTo(vm, &upvalue->gcObj,
-                                             sizeof(Upvalue));
-        if (shouldMoveValuePtr) {
-            ret->value = &ret->closed;
+    if (upvalue) {
+        if (upvalue->gcObj.type == GC_BROKEN_HEART) {
+            Upvalue *ret = *(Upvalue **)((&upvalue->gcObj)+1);
+            return ret;
+        } else {
+            bool shouldMoveValuePtr = (((size_t)upvalue->value) ==
+                                       ((size_t)&upvalue->closed));
+            Upvalue *ret = (Upvalue *)copyFromTo(vm, &upvalue->gcObj,
+                                                 sizeof(Upvalue));
+            if (shouldMoveValuePtr) {
+                ret->value = &ret->closed;
+            }
+            return ret;
         }
-        return ret;
+    } else {
+        return upvalue;
     }
 }
 
@@ -241,34 +247,53 @@ void collect(VM *vm) {
     
     size_t numberOfAllocatedBytes = vm->gc.nextFree;
     vm->gc.nextFree = 0;
-    for (size_t i = 0; i < size(&vm->apiStack); ++i) {
+    for (size_t i = 0; i < vm->apiStackTop; ++i) {
         visitValue(vm, &vm->apiStack[i]);
     }
     for (size_t i = 0; i < size(&vm->handles); ++i) {
-        if (vm->handles[i]) {
-            if (vm->handles[i]->type == GC_BROKEN_HEART) {
-                vm->handles[i] = *((GCObject **)(vm->handles[i]+1));
-            } else {
-                switch (vm->handles[i]->type) {
-                    case GC_OBJECT: {
-                        vm->handles[i] = copyFromTo(vm, vm->handles[i],
-                                                    sizeof(Object));
-                    } break;
-                    case GC_CONS_PAIR: {
-                        vm->handles[i] = copyFromTo(vm, vm->handles[i],
-                                                    sizeof(ConsPair));
-                    } break;
-                    case GC_FUNCTION: {
-                        vm->handles[i] = copyFromTo(vm, vm->handles[i],
-                                                    sizeof(Function));
-                    } break;
-                    case GC_UPVALUE:
-                    case GC_STRING:
-                    case GC_BROKEN_HEART:
-                        assert(false);
+        switch (vm->handles[i].type) {
+            case V_OBJECT: {
+                if (vm->handles[i].object->gcObj.type ==
+                    GC_BROKEN_HEART) {
+                    vm->handles[i].object =
+                        *((Object **)((&vm->handles[i].object->gcObj) +
+                                      1));
+                } else {
+                    vm->handles[i].object =
+                        (Object *)copyFromTo(vm,
+                                             &vm->handles[i].object->gcObj,
+                                             sizeof(Object));
                 }
-            }
-            assert(vm->handles[i]->type < GC_BROKEN_HEART);
+            } break;
+            case V_CONS_PAIR: {
+                if (vm->handles[i].pair) {
+                    if (vm->handles[i].pair->gcObj.type ==
+                        GC_BROKEN_HEART) {
+                        vm->handles[i].pair =
+                            *((ConsPair **)((&vm->handles[i].pair->gcObj) +
+                                            1));
+                    } else {
+                        vm->handles[i].pair =
+                            (ConsPair *)copyFromTo(vm,
+                                                   &vm->handles[i].pair->gcObj,
+                                                   sizeof(ConsPair));
+                    }
+                }
+            } break;
+            case V_FUNCTION: {
+                if (vm->handles[i].func->gcObj.type ==
+                    GC_BROKEN_HEART) {
+                    vm->handles[i].func =
+                        *((Function **)((&vm->handles[i].func->gcObj) +
+                                        1));
+                } else {
+                    vm->handles[i].func =
+                        (Function *)copyFromTo(vm,
+                                               &vm->handles[i].func->gcObj,
+                                               sizeof(Function));
+                }
+            } break;
+            default:break;
         }
     }
     for (size_t i = 0; i < vm->frameStackTop; ++i) {
@@ -289,6 +314,14 @@ void collect(VM *vm) {
         visitValue(vm, &vm->globals.slots[i].key); // Might not be needed
         visitValue(vm, &vm->globals.slots[i].value);
     }
+    for (size_t i = 0; i < size(&vm->symbolTable.slots); ++i) {
+        visitValue(vm, &vm->symbolTable.slots[i].key);
+        visitValue(vm, &vm->symbolTable.slots[i].value);
+    }
+    for (size_t i = 0; i < size(&vm->macros.slots); ++i) {
+        visitValue(vm, &vm->macros.slots[i].key); // Might not be needed
+        visitValue(vm, &vm->macros.slots[i].value);
+    }
     if (vm->globals.parent) {
         fprintf(stderr, "The globals table can not yet have a parent :(\n");
         assert(false);
@@ -306,6 +339,24 @@ void collect(VM *vm) {
         while (u) {
             u->next = visitUpvalue(vm, u->next);
             u = u->next;
+        }
+    }
+
+    for (int64 i = 0; i < (int64)size(&vm->staticDebugInfo); ++i) {
+        switch (vm->staticDebugInfo[i].value.type) {
+            case V_CONS_PAIR: {
+                if (vm->staticDebugInfo[i].value.pair) {
+                    if (vm->staticDebugInfo[i].value.pair->gcObj.type ==
+                        GC_BROKEN_HEART) {
+                        vm->staticDebugInfo[i].value.pair =
+                            *((ConsPair **)(&vm->staticDebugInfo[i].value.pair->gcObj + 1));
+                    } else {
+                        unorderedRemove(&vm->staticDebugInfo, i);
+                        i--;
+                    }
+                }
+            } break;
+            default:break;
         }
     }
     
@@ -338,57 +389,51 @@ void *alloc(VM *vm, size_t size) {
     return ret;
 }
 
-Handle reserve(VM *vm, GCObject *obj) {
-    assert(obj);
+Handle reserve(VM *vm, Value v) {
+    assert(v.type != V_UNDEF);
     for (size_t i = 0; i < size(&vm->handles); ++i) {
-        if (!vm->handles[i]) {
-            vm->handles[i] = obj;
-            //fprintf(stderr, "reserved %lu\n", i);
+        if (vm->handles[i].type == V_UNDEF) {
+            vm->handles[i] = v;
             return Handle{i};
         }
     }
-    add(&vm->handles, obj);
-    //fprintf(stderr, "reserved %lu\n", size(&vm->handles)-1);
+    add(&vm->handles, v);
     return Handle{size(&vm->handles)-1};
 }
 
-Handle reserve(VM *vm, ConsPair *c) {
-    assert(c);
-    return reserve(vm, &c->gcObj);
-}
-
-Handle reserve(VM *vm, Object *o) {
-    assert(o);
-    return reserve(vm, &o->gcObj);
+Handle reserve(VM *vm, ConsPair *p) {
+    assert(p);
+    Value v = {V_CONS_PAIR};
+    v.pair = p;
+    for (size_t i = 0; i < size(&vm->handles); ++i) {
+        if (vm->handles[i].type == V_UNDEF) {
+            vm->handles[i] = v;
+            return Handle{i};
+        }
+    }
+    add(&vm->handles, v);
+    return Handle{size(&vm->handles)-1};
 }
 
 void free(VM *vm, Handle handle) {
-    //fprintf(stderr, "free %lu\n", handle.handle);
-    assert(vm->handles[handle.handle]);
-    vm->handles[handle.handle] = 0;
+    assert(vm->handles[handle.handle].type != V_UNDEF);
+    vm->handles[handle.handle].type = V_UNDEF;
 }
 
-ConsPair &getC(VM *vm, Handle handle) {
-    assert(vm->handles[handle.handle]);
-    assert(vm->handles[handle.handle]->type == GC_CONS_PAIR);
-    return *((ConsPair *)vm->handles[handle.handle]);
+Value &get(VM *vm, Handle handle) {
+    assert(vm->handles[handle.handle].type != V_UNDEF);
+    return vm->handles[handle.handle];
 }
 
-Object &getO(VM *vm, Handle handle) {
-    assert(vm->handles[handle.handle]);
-    assert(vm->handles[handle.handle]->type == GC_OBJECT);
-    return *((Object *)vm->handles[handle.handle]);
+ValueType type(VM *vm, Handle handle) {
+    assert(vm->handles[handle.handle].type != V_UNDEF);
+    return vm->handles[handle.handle].type;
 }
 
-GCObjectType type(VM *vm, Handle handle) {
-    assert(vm->handles[handle.handle]);
-    assert(vm->handles[handle.handle]->type != GC_BROKEN_HEART);
-    return vm->handles[handle.handle]->type;
-}
-
-ConsPair *allocConsPair(VM *vm) {
-    ConsPair *ret = (ConsPair *)alloc(vm, sizeof(ConsPair));
-    *ret = ConsPair();
+Value allocConsPair(VM *vm) {
+    Value ret = {V_CONS_PAIR};
+    ret.pair = (ConsPair *)alloc(vm, sizeof(ConsPair));
+    *ret.pair = ConsPair();
     return ret;
 }
 
@@ -398,12 +443,21 @@ Object *allocObject(VM *vm) {
     return ret;
 }
 
-Function *allocFunction(VM *vm, FunctionPrototype *prototype) {
+FunctionPrototype *getProto(VM *vm, Function *func) {
+    return &vm->funcProtos[func->protoID];
+}
+
+FunctionPrototype *getProto(VM *vm, ActivationFrame *frame) {
+    return &vm->funcProtos[frame->func->protoID];
+}
+
+Function *allocFunction(VM *vm, size_t protoID) {
     Function *ret = (Function *)alloc(vm, sizeof(Function));
     *ret = Function();
     ret->gcObj.type = GC_FUNCTION;
-    ret->prototype = prototype;
-    resize(&ret->upvalues, size(&prototype->upvalues), (Upvalue *)0);
+    ret->protoID = protoID;
+    resize(&ret->upvalues, size(&getProto(vm, ret)->upvalues),
+           (Upvalue *)0);
     return ret;
 }
 
@@ -477,36 +531,51 @@ static void resizeObject(VM *vm, Object *o, size_t newSize);
 #define prevIdx(i) ((i - 1) > size(&o->slots) ? size(&o->slots) - 1 : i - 1)
 #define scaleHash(h, s) ((h) % (s))
 
-// true if succeded, false if failed
-static bool moveSlots(Object *o, size_t start) {
-    if (scaleHash(hashValue(o->slots[start].key),
-                  size(&o->slots)) != start) {
-        return false;
-    }
-    size_t curr = nextIdx(start);
-    while (curr != start && o->slots[curr].key.type != V_UNDEF) {
-        uint32_t collidingMainIdx =
-            scaleHash(hashValue(o->slots[curr].key),
-                      size(&o->slots));
-        if (collidingMainIdx != curr) {
-            return false;
-        }
+//// true if succeded, false if failed
+//static bool moveSlots(Object *o, size_t start) {
+//if (scaleHash(hashValue(o->slots[start].key),
+//size(&o->slots)) != start) {
+//return false;
+//}
+//size_t curr = nextIdx(start);
+//while (curr != start && o->slots[curr].key.type != V_UNDEF) {
+//uint32_t collidingMainIdx =
+//scaleHash(hashValue(o->slots[curr].key),
+//size(&o->slots));
+//if (collidingMainIdx != curr) {
+//return false;
+//}
+//curr = nextIdx(curr);
+//}
+//if (curr == start) {
+//return false;
+//}
+//curr = prevIdx(curr);
+//while (curr != start) {
+//o->slots[nextIdx(curr)] = o->slots[curr];
+//curr = prevIdx(curr);
+//}
+//o->slots[nextIdx(curr)] = o->slots[curr];
+//return true;
+//}
+
+static ObjectSlot *findEmptySlot(Object *o, size_t start) {
+    size_t curr = start;
+    while (nextIdx(curr) != start &&
+           o->slots[curr].key.type != V_UNDEF) {
         curr = nextIdx(curr);
     }
-    if (curr == start) {
-        return false;
+    if (o->slots[curr].key.type != V_UNDEF) {
+        return 0;
     }
-    curr = prevIdx(curr);
-    while (curr != start) {
-        o->slots[nextIdx(curr)] = o->slots[curr];
-        curr = prevIdx(curr);
-    }
-    o->slots[nextIdx(curr)] = o->slots[curr];
-    return true;
+    return &o->slots[curr];
 }
 
 static void insertNewSlot(VM *vm, Object *o,
                           Value key, Value value) {
+    // WRONG!!! If we have insert three keys with same hash we get
+    // resize spiral of death.
+    // Should just be that one of them is in its main position
     // We use Brent's variation. like lua (YAY!).
     // Brent's variation mean that we:
     // find main position.
@@ -525,35 +594,36 @@ static void insertNewSlot(VM *vm, Object *o,
     size_t s = size(&o->slots);
     uint32_t mainIdx = scaleHash(hashValue(key),size(&o->slots));
     if (o->slots[mainIdx].key.type != V_UNDEF) {
+        // Wrong! Should be:
+        // Find a free pos. if we cant, grow and try again.
+        // if colliding slot is not in its main position
+        // move it to the free position. otherwise
+        // insert into the free position.
+        // Sadly this means we need tompstones.
         // Collision
+        ObjectSlot *freePos = findEmptySlot(o, mainIdx);
+        if (!freePos) {
+            resizeObject(vm, o, size(&o->slots)*2);
+            insertNewSlot(vm, o, key, value);
+            return;
+        }
         uint32_t collidingMainIdx =
             scaleHash(hashValue(o->slots[mainIdx].key),
                       size(&o->slots));
         if (mainIdx == collidingMainIdx) {
-            // colliding slot is in its main position
-            if (moveSlots(o, mainIdx)) {
-                // moved colliding slot to its secondary position
-                o->slots[mainIdx].key = key;
-                o->slots[mainIdx].value = value;
-            } else {
-                // cant move colliding slot
-                resizeObject(vm, o, size(&o->slots)*2);
-                assert(size(&o->slots) > 0);
-                insertNewSlot(vm, o, key, value);
-                return;
-            }
+            freePos->key = key;
+            freePos->value = value;
         } else {
             if (o->slots[collidingMainIdx].key.type == V_UNDEF) {
+                // Correct
                 // can move colliding slot to it's main position
                 o->slots[collidingMainIdx] = o->slots[mainIdx];
                 o->slots[mainIdx].key = key;
                 o->slots[mainIdx].value = value;
             } else {
-                // can't put in secondary position
-                resizeObject(vm, o, size(&o->slots)*2);
-                assert(size(&o->slots) > 0);
-                insertNewSlot(vm, o, key, value);
-                return;
+                *freePos = o->slots[mainIdx];
+                o->slots[mainIdx].key = key;
+                o->slots[mainIdx].value = value;
             }
         }
     } else {
@@ -566,22 +636,28 @@ static void insertNewSlot(VM *vm, Object *o,
 // WARNING!!! When we implement our own DynamicArray
 // we have to be carefull about this function returning a pointer.
 Value *getSlot(Object *o, Value key) {
-    uint32_t mainIdx = scaleHash(hashValue(key), size(&o->slots));
-    if (o->slots[mainIdx].key == key) {
-        // In main position
-        return &o->slots[mainIdx].value;
-    } else if (o->slots[nextIdx(mainIdx)].key == key) {
-        // In secondary position
-        return &o->slots[nextIdx(mainIdx)].value;
-    } else {
-        if (o->parent) {
-            // Maybe in parent?
-            return getSlot(o->parent, key);
-        } else {
-            // Not present
-            return 0;
+    uint32 mainIdx = scaleHash(hashValue(key), size(&o->slots));
+    uint32 currIdx = mainIdx;
+    while (o->slots[currIdx].key != key) {
+        if (nextIdx(currIdx) == mainIdx) {
+            if (o->parent) {
+                return getSlot(o->parent, key);
+            } else {
+                return 0;
+            }
         }
+        if (o->slots[currIdx].key.type == V_UNDEF &&
+            o->slots[currIdx].key.boolean) {
+            // Not tombstone
+            if (o->parent) {
+                return getSlot(o->parent, key);
+            } else {
+                return 0;
+            }
+        }
+        currIdx = nextIdx(currIdx);
     }
+    return &o->slots[currIdx].value;
 }
 
 void insertSlot(VM *vm, Object *o, Value key, Value value) {
@@ -627,7 +703,7 @@ bool keyExists(Object *o, Value key) {
 }
 
 void clearStack(VM *vm) {
-    clear(&vm->apiStack);
+    vm->apiStackTop = 0;
 }
 
 void clear(Object *obj) {
@@ -642,7 +718,7 @@ void freeVM(VM *vm) {
 void getGlobal(VM *vm, Symbol variable) {
     Value v = {V_SYMBOL};
     v.sym = variable;
-    add(&vm->apiStack, get(&vm->globals, v));
+    pushValue(vm, get(&vm->globals, v));
 }
 
 void setGlobal(VM *vm, Symbol variable) {
@@ -653,8 +729,8 @@ void setGlobal(VM *vm, Symbol variable) {
 }
 
 Value peek(VM *vm, int idx) {
-    if (idx < 1) {
-        idx = size(&vm->apiStack) + idx;
+    if (idx < 0) {
+        idx = vm->apiStackTop + idx;
         return vm->apiStack[idx];
     } else {
         return vm->apiStack[idx];
@@ -662,7 +738,11 @@ Value peek(VM *vm, int idx) {
 }
 
 Value pop(VM *vm) {
-    return pop(&vm->apiStack);
+    assert(vm->apiStackTop);
+    vm->apiStackTop--;
+    assert(vm->apiStackTop >= vm->apiStackBottom);
+    return vm->apiStack[vm->apiStackTop];
+    //return pop(&vm->apiStack);
 }
 
 bool popBoolean(VM *vm) {
@@ -673,6 +753,12 @@ bool popBoolean(VM *vm) {
 
 double popDouble(VM *vm) {
     Value ret = pop(vm);
+    assert(ret.type == V_DOUBLE);
+    return ret.doub;
+}
+
+double peekDouble(VM *vm, int idx) {
+    Value ret = peek(vm, idx);
     assert(ret.type == V_DOUBLE);
     return ret.doub;
 }
@@ -706,8 +792,18 @@ bool isEmptyList(VM *vm) {
     return top.type == V_CONS_PAIR && top.pair == 0;
 }
 
+bool isList(VM *vm) {
+    Value top = peek(vm, -1);
+    return top.type == V_CONS_PAIR;
+}
+
 void pushValue(VM *vm, Value v) {
-    add(&vm->apiStack, v);
+    if (size(&vm->apiStack) <= vm->apiStackTop) {
+        add(&vm->apiStack, v);
+    } else {
+        vm->apiStack[vm->apiStackTop] = v;
+    }
+    vm->apiStackTop++;
 }
 
 void pushCFunction(VM *vm, CFunction cfunc) {
@@ -734,7 +830,7 @@ void pushSymbol(VM *vm, Symbol symbol) {
     pushValue(vm, v);
 }
 
-void pushString(VM *vm, char *str) {
+void pushString(VM *vm, const char *str) {
     Value v{V_STRING};
     v.str = strdup(str); // LEAK!!!
     pushValue(vm, v);
@@ -754,19 +850,7 @@ void pushOpaque(VM *vm, void *opaque, uint64 type) {
 }
 
 void pushHandle(VM *vm, Handle handle) {
-    Value v = {V_UNDEF};
-    switch (type(vm, handle)) {
-        case GC_OBJECT: {
-            v.type = V_OBJECT;
-            v.object = &getO(vm, handle);
-        } break;
-        case GC_CONS_PAIR: {
-            v.type = V_CONS_PAIR;
-            v.pair = &getC(vm, handle);
-        } break;
-        default:assert(false);
-    }
-    pushValue(vm, v);
+    pushValue(vm, get(vm, handle));
 }
 
 Symbol intern(VM *vm, const char *str) {
@@ -780,7 +864,7 @@ Symbol intern(VM *vm, const char *str) {
         // WARNING!! Leaking!!
         Value s = vStr;
         s.str = strdup(str);
-        symbol.str = s.str;
+        //symbol.str = s.str;
         symbol.id = vm->symbolIdTop;
         vm->symbolIdTop++;
         Value v = {V_SYMBOL};
@@ -791,74 +875,82 @@ Symbol intern(VM *vm, const char *str) {
 }
 
 // TODO: symid to symbol string
-void printValue(Value v) {
+void printValue(VM *vm, Value v, FILE *file) {
     switch(v.type) {
+        case V_CODE_POSITION: {
+            fprintf(file, "<code pos: %lu>", v.codePosition);
+        } break;
         case V_REG_OR_CONSTANT: {
-            printf("<reg or constant: %d global: %s>",
-                   v.regOrConstant, v.nonLocal ? "true" : "false");
+            fprintf(file, "<reg or constant: %d global: %s>",
+                    v.regOrConstant, v.nonLocal ? "true" : "false");
         } break;
         case V_STRING: {
-            printf("\"%s\"", v.str);
+            fprintf(file, "%s", v.str);
         } break;
         case V_UNDEF: {
-            printf("<undef>");
+            fprintf(file, "<undef>");
         } break;
         case V_OPAQUE_POINTER: {
-            printf("<opaque: %p type: %llu>", v.opaque, v.opaqueType);
+            fprintf(file, "<opaque: %p type: %llu>", v.opaque, v.opaqueType);
         } break;
         case V_FUNCTION: {
-            printf("<func: %p>", v.func);
+            fprintf(file, "<func: %p>", v.func);
         } break;
         case V_OBJECT: {
-            printObject(v.object);
+            printObject(vm, v.object, file);
         } break;
         case V_CFUNCTION: {
-            printf("<cfunc: %p>", v.cfunc);
+            fprintf(file, "<cfunc: %p>", v.cfunc);
         } break;
         case V_BOOLEAN: {
-            printf("%s", v.boolean ? "true" : "false");
+            fprintf(file, "%s", v.boolean ? "true" : "false");
         } break;
         case V_DOUBLE: {
-            printf("%f", v.doub);
+            fprintf(file, "%f", v.doub);
         } break;
         case V_SYMBOL: {
-            printf("<%s %d>", v.sym.str, v.sym.id);
+            if (v.sym.id >= 0) {
+                Value str = getFirstKey(&vm->symbolTable, v);
+                fprintf(file, "%s", str.str);
+            } else {
+                fprintf(file, "GENSYMD_%d", -v.sym.id);
+            }
         } break;
         case V_CONS_PAIR: {
-            printf("(");
+            fprintf(file, "(");
             bool isFirst = true;
             while(v.pair) {
                 if (!isFirst) {
-                    printf(" ");
+                    fprintf(file, " ");
                 } else {
                     isFirst = false;
                 }
-                printValue(v.pair->car);
+                printValue(vm, v.pair->car, file);
                 if (v.pair->cdr.type == V_CONS_PAIR) {
                     v = v.pair->cdr;
                 } else {
-                    printf(" . ");
-                    printValue(v.pair->cdr);
+                    fprintf(file, " . ");
+                    printValue(vm, v.pair->cdr, file);
                     break;
                 }
             }
-            printf(")");
+            fprintf(file, ")");
         } break;
     }
 }
 
-void printObject(Object *obj) {
-    printf("{(*pointer* %p)", obj);
+void printObject(VM *vm, Object *obj, FILE *file) {
+    fprintf(file, "{(*pointer* %p)", obj);
     for (size_t i = 0; i < size(&obj->slots); ++i) {
         if (obj->slots[i].key.type != V_UNDEF) {
-            printf(" (");
-            printValue(obj->slots[i].key);
-            printf(" ");
-            printValue(obj->slots[i].value);
-            printf(")");
+            fprintf(file, " (");
+            printValue(vm, obj->slots[i].key, file);
+            fprintf(file, " ");
+            printValue(vm, obj->slots[i].value, file);
+            fprintf(file, ")");
         }
     }
-    printf("}");
+    fprintf(file, "}");
 }
 
 size_t length(Value v) {
@@ -915,12 +1007,13 @@ void printOpCode(OpCode undecoded) {
     }
 }
 
-void printFuncProtoCode(FunctionPrototype *func) {
+void printFuncProtoCode(VM *vm, FunctionPrototype *func) {
+    printf("VARARG: %s\n", func->vararg ? "true" : "false");
     printf("NUM ARGS: %lu\n", func->numArgs);
     printf("CONSTANT TABLE:\n");
     for (size_t i = 0; i < size(&func->constants); ++i) {
         printf("i%lx ", i);
-        printValue(func->constants[i]);
+        printValue(vm, func->constants[i]);
         printf("\n");
     }
     printf("CODE:\n");
@@ -941,7 +1034,7 @@ size_t allocFrame(VM *vm, Function *func) {
     vm->frameStackTop++;
     *frame = ActivationFrame();
     frame->func = func; // Might this break?? or not??
-    resize(&frame->registers, frame->func->prototype->numRegs);
+    resize(&frame->registers, getProto(vm, frame)->numRegs);
     return vm->frameStackTop;
 }
 
@@ -978,11 +1071,62 @@ void closeAllUpvalues(VM *vm, ActivationFrame *frame) {
     }
 }
 
+// This is awfull
+void pushArgument(VM *vm, ActivationFrame *frame,
+                  uint8 argNum, Handle value) {
+    uint8 lastVariableRegister = getProto(vm, frame)->numArgs-1;
+    // weird but safe from integer underflow
+    if ((argNum < getProto(vm, frame)->numArgs &&
+         !getProto(vm, frame)->vararg) ||
+        argNum + (size_t)1 < getProto(vm, frame)->numArgs) {
+        frame->registers[argNum] = get(vm, value);
+    } else {
+        if (getProto(vm, frame)->vararg) {
+            if (argNum + (size_t)1 ==
+                getProto(vm, frame)->numArgs) {
+                Value tail = allocConsPair(vm);
+                tail.pair->car = get(vm, value);
+                tail.pair->cdr.type = V_CONS_PAIR;
+                tail.pair->cdr.pair = 0;
+                frame->registers[lastVariableRegister] =
+                    tail;
+            } else {
+                Value tail = allocConsPair(vm);
+                tail.pair->car = get(vm, value);
+                tail.pair->cdr.type = V_CONS_PAIR;
+                tail.pair->cdr.pair = 0;
+                Value *lst =
+                    &frame->registers[lastVariableRegister];
+                while (lst->pair->cdr.pair) {
+                    lst = &lst->pair->cdr;
+                }
+                lst->pair->cdr = tail;
+            }
+        } else {
+            fprintf(stderr, "Not correct amount of arguments!\n");
+            assert(false);
+        }
+    }
+}
+
+bool correctNumberOfArgs(VM *vm, ActivationFrame *frame, uint8 numArgs) {
+    if (numArgs == getProto(vm, frame)->numArgs) {
+        return true;
+    }
+    if (!getProto(vm, frame)->vararg) {
+        return false;
+    }
+    if (numArgs + (size_t)1 < getProto(vm, frame)->numArgs) {
+        return false;
+    }
+    return true;
+}
+
 Value runFunc(VM *vm, size_t frameID) {
     OpCode undecoded;
     ActivationFrame *frame = &vm->frameStack[frameID-1];
  loop:
-    undecoded = frame->func->prototype->code[frame->pc];
+    undecoded = getProto(vm, frame)->code[frame->pc];
     OpCode instr = getOp(undecoded);
     switch(instr) {
         case OP_LOAD_NULL: {
@@ -996,8 +1140,7 @@ Value runFunc(VM *vm, size_t frameID) {
             uint8 dstReg = getRegA(undecoded);
             uint8 carReg = getRegB(undecoded);
             uint8 cdrReg = getRegC(undecoded);
-            Value v = {V_CONS_PAIR};
-            v.pair = allocConsPair(vm);
+            Value v = allocConsPair(vm);
             v.pair->car = frame->registers[carReg];
             v.pair->cdr = frame->registers[cdrReg];
             frame->registers[dstReg] = v;
@@ -1006,7 +1149,7 @@ Value runFunc(VM *vm, size_t frameID) {
         case OP_LOADK: {
             uint8 reg = getRegA(undecoded);
             uint32 k = getImm(undecoded);
-            frame->registers[reg] = frame->func->prototype->constants[k];
+            frame->registers[reg] = getProto(vm, frame)->constants[k];
             frame->pc++;
         } break;
         case OP_SETUP_CALL: {
@@ -1016,6 +1159,8 @@ Value runFunc(VM *vm, size_t frameID) {
                 goto call;
             } else if (callee.type == V_CFUNCTION) {
                 goto ccall;
+            } else {
+                assert(false);
             }
         } break;
         case OP_RETURN: {
@@ -1051,8 +1196,8 @@ Value runFunc(VM *vm, size_t frameID) {
             uint32 localProtoID = getImm(undecoded);
             Value func = {V_FUNCTION};
             size_t protoID =
-                frame->func->prototype->subFuncProtoIDs[localProtoID];
-            func.func = allocFunction(vm, &vm->funcProtos[protoID]);
+                getProto(vm, frame)->subFuncProtoIDs[localProtoID];
+            func.func = allocFunction(vm, protoID);
             frame->registers[reg] = func;
             for (size_t i = 0;
                  i < size(&frame->registers[reg].func->upvalues); ++i) {
@@ -1105,50 +1250,52 @@ Value runFunc(VM *vm, size_t frameID) {
         case OP_DEFINE_GLOBAL: {
             uint8 reg = getRegA(undecoded);
             uint32 k = getImm(undecoded);
-            if (frame->func->prototype->constants[k].type != V_SYMBOL) {
+            if (getProto(vm, frame)->constants[k].type != V_SYMBOL) {
                 fprintf(stderr, "ICE: DEFINE_GLOBAL imm not a symbol\n");
                 assert(false);
             }
 
-            set(vm, &vm->globals, frame->func->prototype->constants[k], 
+            set(vm, &vm->globals, getProto(vm, frame)->constants[k], 
                 frame->registers[reg]); 
             frame->pc++;
         } break;
         case OP_GET_GLOBAL: {
             uint8 reg = getRegA(undecoded);
             uint32 k = getImm(undecoded);
-            if (frame->func->prototype->constants[k].type != V_SYMBOL) {
+            if (getProto(vm, frame)->constants[k].type != V_SYMBOL) {
                 fprintf(stderr, "ICE: GET_GLOBAL imm not a symbol\n");
                 assert(false);
             }
             if (!keyExists(&vm->globals,
-                           frame->func->prototype->constants[k])) {
-                fprintf(stderr, "ERROR: Global '%s does not exist\n",
-                        frame->func->prototype->constants[k].sym.str);
+                           getProto(vm, frame)->constants[k])) {
+                fprintf(stderr, "ERROR: Global ");
+                printValue(vm, getProto(vm, frame)->constants[k], stderr);
+                fprintf(stderr, " does not exist\n");
                 assert(false);
                         
             }
 
             frame->registers[reg] = get(&vm->globals,
-                                        frame->func->prototype->constants[k]);
+                                        getProto(vm, frame)->constants[k]);
             frame->pc++;
         } break;
         case OP_SET_GLOBAL: {
             uint8 reg = getRegA(undecoded);
             uint32 k = getImm(undecoded);
-            if (frame->func->prototype->constants[k].type != V_SYMBOL) {
+            if (getProto(vm, frame)->constants[k].type != V_SYMBOL) {
                 fprintf(stderr, "ICE: GET_GLOBAL imm not a symbol\n");
                 assert(false);
             }
             if (!keyExists(&vm->globals,
-                           frame->func->prototype->constants[k])) {
-                fprintf(stderr, "ERROR: Global '%s does not exist\n",
-                        frame->func->prototype->constants[k].sym.str);
+                           getProto(vm, frame)->constants[k])) {
+                fprintf(stderr, "ERROR: Global ");
+                printValue(vm, getProto(vm, frame)->constants[k], stderr);
+                fprintf(stderr, " does not exist\n");
                 assert(false);
                         
             }
 
-            set(vm, &vm->globals, frame->func->prototype->constants[k],
+            set(vm, &vm->globals, getProto(vm, frame)->constants[k],
                 frame->registers[reg]);
             frame->pc++;
         } break;
@@ -1212,14 +1359,21 @@ Value runFunc(VM *vm, size_t frameID) {
         ActivationFrame *calleeFrame = &vm->frameStack[calleeFrameID-1];
         calleeFrame->calledFromCpp = false;
         uint8 dstReg = 0;
+        if (getProto(vm, calleeFrame)->numArgs > 0) {
+            calleeFrame->registers[getProto(vm, calleeFrame)->numArgs-1].type = V_CONS_PAIR;
+            calleeFrame->registers[getProto(vm, calleeFrame)->numArgs-1].pair = 0;
+        }
     pushArgLoop:
-        undecoded = frame->func->prototype->code[frame->pc];
+        undecoded = getProto(vm, frame)->code[frame->pc];
         instr = getOp(undecoded);
+        // Underflow is ok bc we only use it in cases where undeflow
+        // is not possible
         switch(instr) {
             case OP_PUSH_ARG: {
                 uint8 srcReg = getRegA(undecoded);
-                calleeFrame->registers[dstReg] =
-                    frame->registers[srcReg];
+                Handle value = reserve(vm, frame->registers[srcReg]);
+                pushArgument(vm, calleeFrame, dstReg, value);
+                free(vm, value);
                 dstReg++;
                 frame->pc++;
             } break;
@@ -1229,7 +1383,7 @@ Value runFunc(VM *vm, size_t frameID) {
                 calleeFrame->retReg = retReg;
                 frame = calleeFrame;
                 frameID = calleeFrameID;
-                if (dstReg != frame->func->prototype->numArgs) {
+                if (!correctNumberOfArgs(vm, frame, dstReg)) {
                     fprintf(stderr, "Not correct amount of arguments!\n");
                     assert(false);
                 }
@@ -1251,8 +1405,11 @@ Value runFunc(VM *vm, size_t frameID) {
         assert(callee.type == V_CFUNCTION);
         frame->pc++;
         uint8 numArgs = 0;
+        size_t apiStackBottom = vm->apiStackBottom;
+        vm->apiStackBottom = vm->apiStackTop;
+        size_t apiStackTop = vm->apiStackTop;
     cpushArgLoop:
-        undecoded = frame->func->prototype->code[frame->pc];
+        undecoded = getProto(vm, frame)->code[frame->pc];
         instr = getOp(undecoded);
         switch(instr) {
             case OP_PUSH_ARG: {
@@ -1264,12 +1421,13 @@ Value runFunc(VM *vm, size_t frameID) {
             case OP_CALL: {
                 frame->pc++;
                 uint8 retReg = getRegA(undecoded);
-                size_t numRet = callee.cfunc(vm, numArgs);
-                if (numRet) {
+                if (callee.cfunc(vm, numArgs)) {
                     frame->registers[retReg] = pop(vm);
                 } else {
                     frame->registers[retReg].type = V_UNDEF;
                 }
+                vm->apiStackBottom = apiStackBottom;
+                vm->apiStackTop = apiStackTop;
                 //frame = calleeFrame;
                 //frameID = calleeFrameID;
                 //if (dstReg != frame->func->prototype->numArgs) {
@@ -1290,21 +1448,28 @@ Value runFunc(VM *vm, size_t frameID) {
 }
 
 void call(VM *vm, uint8 numArgs) {
-    Value callee = pop(&vm->apiStack);
+    Value callee = pop(vm);
     assert(callee.type == V_FUNCTION);
     size_t frameID = allocFrame(vm, callee.func);
     ActivationFrame *frame = &vm->frameStack[frameID-1];
-    if (numArgs != frame->func->prototype->numArgs) {
+    // TODO ((lambda args body))
+    if (!correctNumberOfArgs(vm, frame, numArgs)) {
         fprintf(stderr, "Not correct amount of argument!\n");
         assert(false);
     }
+    if (getProto(vm, frame)->numArgs > 0) {
+        frame->registers[getProto(vm, frame)->numArgs-1].type = V_CONS_PAIR;
+        frame->registers[getProto(vm, frame)->numArgs-1].pair = 0;
+    }
     uint8 reg = 0;
-    for (size_t i = size(&vm->apiStack)-numArgs;
-         i < size(&vm->apiStack); ++i) {
-        frame->registers[reg] = vm->apiStack[i];
+    for (size_t i = vm->apiStackTop-numArgs;
+         i < vm->apiStackTop; ++i) {
+        Handle value = reserve(vm, vm->apiStack[i]);
+        pushArgument(vm, frame, reg, value);
+        free(vm, value);
         reg++;
     }
-    resize(&vm->apiStack, size(&vm->apiStack)-numArgs);
+    vm->apiStackTop -= numArgs;
     pushValue(vm, runFunc(vm, frameID));
 }
 
@@ -1316,35 +1481,16 @@ void doString(VM *vm, const char *prog, size_t numArgs, bool verbose) {
 void doFile(VM *vm, const char *path, size_t numArgs, bool verbose) {
     pushValue(vm, compileFile(vm, path, verbose));
     for (size_t i = 0; i < size(&vm->funcProtos); ++i) {
-        printFuncProtoCode(&vm->funcProtos[i]);
+        printf("\nFunction %lu:\n", i);
+        printFuncProtoCode(vm, &vm->funcProtos[i]);
     }
     call(vm, numArgs);
 }
 
-size_t lispisAnd(VM *vm, size_t numArgs) {
-    bool ret = true;
-    while (numArgs) {
-        ret = ret && popBoolean(vm);
-        numArgs--;
-    }
-    pushBoolean(vm, ret);
-    return 1;
-}
-
-size_t lispisOr(VM *vm, size_t numArgs) {
-    bool ret = false;
-    while (numArgs) {
-        ret = ret || popBoolean(vm);
-        numArgs--;
-    }
-    pushBoolean(vm, ret);
-    return 1;
-}
-
-size_t lispisLT(VM *vm, size_t numArgs) {
+bool lispisLT(VM *vm, size_t numArgs) {
     if (numArgs < 1) {
         pushBoolean(vm, false);
-        return 1;
+        return true;
     } else {
         double prev = popDouble(vm);
         numArgs--;
@@ -1352,20 +1498,20 @@ size_t lispisLT(VM *vm, size_t numArgs) {
             double curr = popDouble(vm);
             if (prev < curr) {
                 pushBoolean(vm, false);
-                return 1;
+                return true;
             }
             prev = curr;
             numArgs--;
         }
         pushBoolean(vm, true);
-        return 1;
+        return true;
     }
 }
 
-size_t lispisGT(VM *vm, size_t numArgs) {
+bool lispisGT(VM *vm, size_t numArgs) {
     if (numArgs < 1) {
         pushBoolean(vm, false);
-        return 1;
+        return true;
     } else {
         double prev = popDouble(vm);
         numArgs--;
@@ -1373,20 +1519,20 @@ size_t lispisGT(VM *vm, size_t numArgs) {
             double curr = popDouble(vm);
             if (prev > curr) {
                 pushBoolean(vm, false);
-                return 1;
+                return true;
             }
             prev = curr;
             numArgs--;
         }
         pushBoolean(vm, true);
-        return 1;
+        return true;
     }
 }
 
-size_t lispisEQ(VM *vm, size_t numArgs) {
+bool lispisEQ(VM *vm, size_t numArgs) {
     if (numArgs < 1) {
         pushBoolean(vm, true);
-        return 1;
+        return true;
     } else {
         bool ret = true;
         Value last = pop(vm);
@@ -1396,44 +1542,215 @@ size_t lispisEQ(VM *vm, size_t numArgs) {
             numArgs--;
         }
         pushBoolean(vm, ret);
-        return 1;
+        return true;
     }
 }
 
-size_t lispisList(VM *vm, size_t numArgs) {
+bool lispisList(VM *vm, size_t numArgs) {
     Value nil = {V_CONS_PAIR};
     nil.pair = 0;
     if (numArgs > 0) {
         Handle prev = reserve(vm, allocConsPair(vm));
-        getC(vm, prev).car = pop(vm);
-        getC(vm, prev).cdr = nil;
+        get(vm, prev).pair->car = pop(vm);
+        get(vm, prev).pair->cdr = nil;
         numArgs--;
         while (numArgs) {
             Handle newHead = reserve(vm, allocConsPair(vm));
-            getC(vm, newHead).car = pop(vm);
-            getC(vm, newHead).cdr.type = V_CONS_PAIR;
-            getC(vm, newHead).cdr.pair = &getC(vm, prev);
+            get(vm, newHead).pair->car = pop(vm);
+            get(vm, newHead).pair->cdr.type = V_CONS_PAIR;
+            get(vm, newHead).pair->cdr = get(vm, prev);
             free(vm, prev);
             prev = newHead;
             numArgs--;
         }
-        Value ret = {V_CONS_PAIR};
-        ret.pair = &getC(vm, prev);
+        Value ret = get(vm, prev);
         free(vm, prev);
         pushValue(vm, ret);
     } else {
         pushValue(vm, nil);
     }
-    return 1;
+    return true;
+}
+
+bool lispisCons(VM *vm, size_t numArgs) {
+    assert(numArgs == 2);
+    Handle cdr = reserve(vm, pop(vm));
+    Handle car = reserve(vm, pop(vm));
+    Value ret = allocConsPair(vm);
+    ret.pair->car = get(vm, car);
+    ret.pair->cdr = get(vm, cdr);
+    pushValue(vm, ret);
+    free(vm, cdr);
+    free(vm, car);
+    return true;
+}
+
+bool lispisCar(VM *vm, size_t numArgs) {
+    assert(numArgs == 1);
+    Value p = pop(vm);
+    if (p.type != V_CONS_PAIR) {
+        fprintf(stderr, "ERROR: car argument not a cons pair\n");
+        assert(false);
+    }
+    if (!p.pair) {
+        fprintf(stderr, "ERROR: car argument '()\n");
+        assert(false);
+    }
+    pushValue(vm, p.pair->car);
+    return true;
+}
+
+bool lispisCdr(VM *vm, size_t numArgs) {
+    assert(numArgs == 1);
+    Value p = pop(vm);
+    if (p.type != V_CONS_PAIR) {
+        fprintf(stderr, "ERROR: cdr argument not a cons pair\n");
+        assert(false);
+    }
+    if (!p.pair) {
+        fprintf(stderr, "ERROR: cdr argument '()\n");
+        assert(false);
+    }
+    pushValue(vm, p.pair->cdr);
+    return true;
+}
+
+bool lispisNullP(VM *vm, size_t numArgs) {
+    assert(numArgs == 1);
+    Value arg = pop(vm);
+    pushBoolean(vm, arg.type == V_CONS_PAIR && !arg.pair);
+    return true;
+}
+
+bool lispisListP(VM *vm, size_t numArgs) {
+    assert(numArgs == 1);
+    Value arg = pop(vm);
+    pushBoolean(vm, arg.type == V_CONS_PAIR);
+    return true;
+}
+
+bool lispisNot(VM *vm, size_t numArgs) {
+    assert(numArgs == 1);
+    pushBoolean(vm, !popBoolean(vm));
+    return true;
+}
+
+bool lispisAdd(VM *vm, size_t numArgs) {
+    double ret = 0;
+    while (numArgs) {
+        ret += popDouble(vm);
+        numArgs--;
+    }
+    pushDouble(vm, ret);
+    return true;
+}
+
+bool lispisSub(VM *vm, size_t numArgs) {
+    assert(numArgs > 0);
+    double ret = peekDouble(vm, -numArgs);
+    numArgs--;
+    if (numArgs) {
+        while (numArgs) {
+            ret -= peekDouble(vm, -numArgs);
+            numArgs--;
+        }
+    } else {
+        ret = -ret;
+    }
+    pushDouble(vm, ret);
+    return true;
+}
+
+bool lispisGetSlot(VM *vm, size_t numArgs) {
+    assert(numArgs == 2);
+    Value key = pop(vm);
+    Value obj = pop(vm);
+    switch (obj.type) {
+        case V_OBJECT: {
+            pushValue(vm, get(obj.object, key));
+        } break;
+        case V_CONS_PAIR: {
+            assert(key.type == V_DOUBLE);
+            pushValue(vm, at(obj, key.doub));
+        } break;
+        default:assert(false);
+    }
+    return true;
+}
+
+bool lispisSetSlot(VM *vm, size_t numArgs) {
+    assert(numArgs == 3);
+    Value value = pop(vm);
+    Value key = pop(vm);
+    Value obj = pop(vm);
+    switch (obj.type) {
+        case V_OBJECT: {
+            set(vm, obj.object, key, value);
+            pushValue(vm, value);
+        } break;
+        default:assert(false);
+    }
+    return true;
+}
+
+bool lispisPrint(VM *vm, size_t numArgs) {
+    while (numArgs) {
+        printValue(vm, peek(vm, -numArgs));
+        numArgs--;
+    }
+    return false;
+}
+
+bool lispisPrintln(VM *vm, size_t numArgs) {
+    lispisPrint(vm, numArgs);
+    printf("\n");
+    return false;
+}
+
+bool lispisNewline(VM *vm, size_t numArgs) {
+    assert(numArgs == 0);
+    pushString(vm, "\n");
+    return true;
+}
+
+Symbol gensym(VM *vm) {
+    Symbol ret = {vm->gensymIdTop};
+    vm->gensymIdTop--;
+    return ret;
+}
+
+bool lispisGensym(VM *vm, size_t numArgs) {
+    assert(numArgs == 0);
+    Symbol ret = gensym(vm);
+    pushSymbol(vm, ret);
+    return true;
+}
+
+bool lispisError(VM *vm, size_t numArgs) {
+    printf("ERROR: ");
+    lispisPrintln(vm, numArgs);
+    assert(false);
+    return false;
+}
+
+bool lispisSetCdr(VM *vm, size_t numArgs) {
+    assert(numArgs == 2);
+    Handle newCdr = reserve(vm, pop(vm));
+    Handle pair = reserve(vm, pop(vm));
+    assert(get(vm, pair).pair);
+    get(vm, pair).pair->cdr = get(vm, newCdr);
+    free(vm, newCdr);
+    free(vm, pair);
+    return false;
 }
 
 VM initVM(bool loadDefaults) {
     VM vm;
     if (loadDefaults) {
-        pushCFunction(&vm, lispisAnd);
-        setGlobal(&vm, intern(&vm, "and"));
-        pushCFunction(&vm, lispisOr);
-        setGlobal(&vm, intern(&vm, "or"));
+        //pushCFunction(&vm, lispisAnd);
+        //setGlobal(&vm, intern(&vm, "and"));
+        //pushCFunction(&vm, lispisOr);
+        //setGlobal(&vm, intern(&vm, "or"));
         pushCFunction(&vm, lispisLT);
         setGlobal(&vm, intern(&vm, "<"));
         pushCFunction(&vm, lispisGT);
@@ -1442,6 +1759,173 @@ VM initVM(bool loadDefaults) {
         setGlobal(&vm, intern(&vm, "="));
         pushCFunction(&vm, lispisList);
         setGlobal(&vm, intern(&vm, "list"));
+        pushCFunction(&vm, lispisCons);
+        setGlobal(&vm, intern(&vm, "cons"));
+        pushCFunction(&vm, lispisCar);
+        setGlobal(&vm, intern(&vm, "car"));
+        pushCFunction(&vm, lispisCdr);
+        setGlobal(&vm, intern(&vm, "cdr"));
+        pushCFunction(&vm, lispisSetCdr);
+        setGlobal(&vm, intern(&vm, "set-cdr!"));
+        pushCFunction(&vm, lispisNullP);
+        setGlobal(&vm, intern(&vm, "null?"));
+        pushCFunction(&vm, lispisListP);
+        setGlobal(&vm, intern(&vm, "list?"));
+        pushCFunction(&vm, lispisNot);
+        setGlobal(&vm, intern(&vm, "not"));
+        pushCFunction(&vm, lispisAdd);
+        setGlobal(&vm, intern(&vm, "+"));
+        pushCFunction(&vm, lispisSub);
+        setGlobal(&vm, intern(&vm, "-"));
+        pushCFunction(&vm, lispisGetSlot);
+        setGlobal(&vm, intern(&vm, "get-slot"));
+        pushCFunction(&vm, lispisSetSlot);
+        setGlobal(&vm, intern(&vm, "set-slot"));
+        pushCFunction(&vm, lispisPrint);
+        setGlobal(&vm, intern(&vm, "print"));
+        pushCFunction(&vm, lispisPrintln);
+        setGlobal(&vm, intern(&vm, "println"));
+        pushCFunction(&vm, lispisNewline);
+        setGlobal(&vm, intern(&vm, "newline"));
+        pushCFunction(&vm, lispisGensym);
+        setGlobal(&vm, intern(&vm, "gensym"));
+        pushCFunction(&vm, lispisError);
+        setGlobal(&vm, intern(&vm, "error"));
+        doString(&vm,
+                 "(defmacro and args"
+                 "  (if (null? (cdr args))"
+                 "      (car args)"
+                 "      (list 'if (car args)"
+                 "            (cons 'and (cdr args)) 'false)))"
+                 ""
+                 "(defmacro or args"
+                 "  (if (null? (cdr args))"
+                 "      (car args)"
+                 "      (list 'if (car args)"
+                 "            'true (cons 'or (cdr args)))))"
+                 ""
+                 "(defmacro cond branches"
+                 "  (let inner"
+                 "    (lambda (branches)"
+                 "      (if (null? branches)"
+                 "          '()"
+                 "          (if (null? (cdr branches))"
+                 "              (append '(if) (car branches))"
+                 "              (append '(if) (car branches)"
+                 "                      (list (inner (cdr branches))))))))"
+                 "  (inner branches))"
+                 ""
+                 "(define append"
+                 "  (lambda args"
+                 "    (let append-inner"
+                 "      (lambda (lst lsts)"
+                 "        (if (null? lst)"
+                 "            (if (null? lsts)"
+                 "                '()"
+                 "                (append-inner (car lsts) (cdr lsts)))"
+                 "            (cons (car lst)"
+                 "                  (append-inner (cdr lst) lsts)))))"
+                 "    (if (and (not (null? args))"
+                 "             (not (list? (car args))))"
+                 "        (car args)"
+                 "        (append-inner '() args))))"
+                 , 0, false);
+        doString(&vm, "\
+(let quasiquote? (x)\
+     (and (list? x) (not (null? x)) (= (car x) 'quasiquote)\
+          (list? (cdr x)) (not (null? (cdr x)))))\
+\
+(let unquote? (x)\
+     (and (list? x) (not (null? x)) (= (car x) 'unquote)\
+          (list? (cdr x)) (not (null? (cdr x)))))\
+\
+(let unquote-splicing? (x)\
+     (and (list? x) (not (null? x)) (= (car x) 'unquote-splicing)\
+          (list? (cdr x)) (not (null? (cdr x)))))\
+\
+(let q-data (x)\
+     (car (cdr x)))\
+\
+(define qq-expand (x)\
+     (cond ((unquote? x)\
+            (q-data x))\
+           ((unquote-splicing? x)\
+            (error \"Illegal ,@\"))\
+           ((quasiquote? x)\
+            (qq-expand\
+             (qq-expand (q-data x))))\
+           ((and (list? x) (not (null? x)))\
+            (list 'append\
+                  (qq-expand-list (car x))\
+                  (qq-expand (cdr x))))\
+           (true (list 'quote x))))\
+\
+(define qq-expand-list (x)\
+     (cond ((unquote? x)\
+            (list 'list (q-data x)))\
+           ((unquote-splicing? x)\
+            (q-data x))\
+           ((quasiquote? x)\
+            (qq-expand-list\
+             (qq-expand (q-data x))))\
+           ((and (list? x) (not (null? x)))\
+            (list 'list\
+                  (list 'append\
+                        (qq-expand-list (car x))\
+                        (qq-expand (cdr x)))))\
+           (true (list 'quote (list x)))))\
+"
+                 , 0, false);
+        doString(&vm,
+                 "\
+(defmacro quasiquote (arg)\
+  (qq-expand arg))\
+"
+                 , 0, false);
+        doString(&vm,
+                 "\
+(defmacro for (init . body)\
+  (let iter (gensym))\
+  (let for-label (gensym))\
+  `(scope\
+    (let ,iter ,(car (cdr init)))\
+    (label ,for-label)\
+    (if (get-slot ,iter 'alive)\
+        (scope\
+         (let ,(car init) ((get-slot ,iter 'update) ,iter))\
+         ,@body\
+         (go ,for-label)))))\
+"
+                 , 0, false);
     }
     return vm;
+}
+
+LineInfo findLineInfo(VM *vm, Value value) {
+    for (size_t i = 0; i < size(&vm->staticDebugInfo); ++i) {
+        if (vm->staticDebugInfo[i].value == value) {
+            return vm->staticDebugInfo[i];
+        }
+    }
+    assert(false);
+}
+
+Value &getFirstKey(Object *o, Value value) {
+    for (size_t i = 0; i < size(&o->slots); ++i) {
+        if (o->slots[i].value == value) {
+            return o->slots[i].key;
+        }
+    }
+    if (o->parent) {
+        return getFirstKey(o->parent, value);
+    } else {
+        assert(false);
+    }
+}
+
+char *getSymbolString(VM *vm, Symbol symbol) {
+    assert(symbol.id >= 0);
+    Value v = {V_SYMBOL};
+    v.sym = symbol;
+    return getFirstKey(&vm->symbolTable, v).str;
 }

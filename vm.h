@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstring>
 #include <cstdint>
+#include <cstdio>
 
 // How do we make shure that all the DynamicArray's are treated as roots?
 struct DynamicArrayData {
@@ -62,8 +63,19 @@ void remove(DynamicArray<T> *a, size_t idx) {
 }
 
 template <typename T>
+void unorderedRemove(DynamicArray<T> *a, size_t idx) {
+    a->v[idx] = a->v[size(a)-1];
+    a->v.pop_back();
+}
+
+template <typename T>
 void clear(DynamicArray<T> *a) {
     a->v.clear();
+}
+
+template <typename T>
+T &last(DynamicArray<T> *a) {
+    return a->v[size(a)-1];
 }
 
 typedef unsigned char uint8;
@@ -96,11 +108,12 @@ extern const char *opCodeStr[];
 
 struct Value;
 
+struct LineInfo;
+
 // Warning! DO NOT CREATE THIS YOUR SELF!!!!
 // Use intern!!!
 struct Symbol {
     int id;
-    char *str;
 };
 
 struct UpvalueDesc {
@@ -124,6 +137,7 @@ struct FunctionPrototype {
     //DynamicArray<FunctionPrototype *> subFunctions;
     size_t numRegs = 0;
     size_t numArgs;
+    bool vararg;
 };
 
 struct Upvalue;
@@ -131,7 +145,7 @@ struct Upvalue;
 // Rename to Closure
 struct Function {
     GCObject gcObj;
-    FunctionPrototype *prototype;
+    size_t protoID; // Fuck life
     DynamicArray<Upvalue *> upvalues;
 };
 
@@ -147,6 +161,7 @@ enum ValueType {
     V_OPAQUE_POINTER, 
     V_OBJECT,
     V_REG_OR_CONSTANT, // Used by compiler only.
+    V_CODE_POSITION,   // Used by compiler only.
 };
 
 struct ActivationFrame {
@@ -177,19 +192,24 @@ struct Handle {
     size_t handle;
 };
 
+struct LineInfo;
 
 struct VM {
     DynamicArray<FunctionPrototype> funcProtos;
     DynamicArray<Value> apiStack;
     DynamicArray<ActivationFrame> frameStack;
+    DynamicArray<LineInfo> staticDebugInfo;
     size_t frameStackTop = 0;
+    size_t apiStackTop = 0;
+    size_t apiStackBottom = 0;
     // Needs to be Value, since the compiler works with Values
-    DynamicArray<GCObject *> handles;
+    DynamicArray<Value> handles;
     Object globals;
     Object macros;
     Object symbolTable;
-    GC gc;
     int symbolIdTop = 0;
+    int gensymIdTop = -1;
+    GC gc;
     Upvalue *openUpvalueHead = 0;
 };
 
@@ -197,28 +217,27 @@ void free(VM *vm, Handle handle);
 
 // WARNING: arguments are in reverse,
 // ie last argument is the top of the stack
-typedef size_t (*CFunction)(VM *vm, size_t numArgs);
+typedef bool (*CFunction)(VM *vm, size_t numArgs);
 
 struct ConsPair;
 
 /*
   The evaluation order of
-  getC(vm, currParent).cdr.pair = allocConsPair(vm);
+  get(vm, currParent).pair->cdr.pair = allocConsPair(vm);
   is unspecified, meaning that it may choose to
   first evaluate getC then allocConsPair. If allocConsPair
-  triggers a gc cycle then the pointer that getC
+  triggers a gc cycle then the pointer that get
   returned is invalidated and we get weird, imposible to
   debug crashes that look like gc bugs. 
   ╔═╗╦ ╦╔═╗╦╔═  ╔╦╗╦ ╦╔═╗  ╔═╗╔╦╗╔═╗╔╗╔╔╦╗╔═╗╦═╗╔╦╗
   ╠╣ ║ ║║  ╠╩╗   ║ ╠═╣║╣   ╚═╗ ║ ╠═╣║║║ ║║╠═╣╠╦╝ ║║
   ╚  ╚═╝╚═╝╩ ╩   ╩ ╩ ╩╚═╝  ╚═╝ ╩ ╩ ╩╝╚╝═╩╝╩ ╩╩╚══╩╝
 */
-ConsPair &getC(VM *vm, Handle handle);
-Object &getO(VM *vm, Handle handle);
-GCObjectType type(VM *vm, Handle handle);
+Value &get(VM *vm, Handle handle);
+ValueType type(VM *vm, Handle handle);
 
-Handle reserve(VM *vm, ConsPair *c);
-Handle reserve(VM *vm, Object *o);
+Handle reserve(VM *vm, Value v);
+Handle reserve(VM *vm, ConsPair *p);
 
 struct String {
     GCObject gcObj;
@@ -232,25 +251,38 @@ struct String {
 struct Value {
     Value();
     Value(ValueType t);
-    ValueType type;
+    ValueType type; // 8 bytes, bc of alignment
     union {
+        // Ugly, but then we can have a lineinfo pointer and
+        // Value is still sizeof(ptr)*3
+        // and we can give quasiquoted stuff the correct lineinfo etc
+        struct { // 16 bytes
+            ConsPair *pair;
+            LineInfo *lineInfo; // 8 bytes
+        };  
+        struct { // 16 bytes
+            uint64 opaqueType;
+            void *opaque;
+        };
+        Object *object;
         Function *func;
         CFunction cfunc;
         double doub;
         bool boolean;
+        char *str;
         struct { // Used in the compiler only
             uint8 regOrConstant;
             bool nonLocal;
         };
         Symbol sym;
-        char *str;
-        Object *object;
-        struct {
-            uint64 opaqueType;
-            void *opaque;
-        };
-        ConsPair *pair;
+        size_t codePosition; // 8 bytes
     };
+};
+
+struct LineInfo {
+    size_t line;
+    size_t column;
+    Value value;
 };
 
 struct Upvalue {
@@ -278,13 +310,14 @@ struct ConsPair {
 
 Value at(Value v, size_t idx);
 
-ConsPair *allocConsPair(VM *vm);
+Value allocConsPair(VM *vm);
 Object *allocObject(VM *vm);
-Function *allocFunction(VM *vm, FunctionPrototype *prototype);
+Function *allocFunction(VM *vm, size_t protoID);
 Upvalue *allocUpvalue(VM *vm);
 
 void set(VM *vm, Object *o, Value key, Value value);
 Value &get(Object *o, Value key);
+Value &getFirstKey(Object *o, Value value);
 bool keyExists(Object *o, Value key);
 
 void clearStack(VM *vm);
@@ -295,11 +328,20 @@ bool operator==(Symbol a, Symbol b) {
 }
 
 inline
+bool operator==(Value a, Symbol b) {
+    return a.type == V_SYMBOL && a.sym.id == b.id;
+}
+
+
+inline
 bool operator==(Value a, Value b) {
     if (a.type != b.type) {
         return false;
     } else {
         switch (a.type) {
+            case V_CODE_POSITION: {
+                return a.codePosition == b.codePosition;
+            }
             case V_BOOLEAN: {
                 return a.boolean == b.boolean;
             } break;
@@ -342,6 +384,11 @@ bool operator==(Value a, Value b) {
     return false; // unreachable
 }
 
+inline
+bool operator!=(Value a, Value b) {
+    return !(a == b);
+}
+
 // Illegal to use vm after calling freeVM on it.
 void freeVM(VM *vm);
 void getGlobal(VM *vm, Symbol variable);
@@ -355,16 +402,18 @@ Value pop(VM *vm);
 bool popBoolean(VM *vm);
 double popDouble(VM *vm);
 Symbol popSymbol(VM *vm);
+double peekDouble(VM *vm, int idx);
 void car(VM *vm);
 void cdr(VM *vm);
 void dup(VM *vm);
 
 bool isEmptyList(VM *vm);
+bool isList(VM *vm);
 
 void pushDouble(VM *vm, double doub);
 void pushSymbol(VM *vm, char *symstr);
 void pushSymbol(VM *vm, Symbol symbol);
-void pushString(VM *vm, char *str);
+void pushString(VM *vm, const char *str);
 void pushBoolean(VM *vm, bool boolean);
 void pushOpaque(VM *vm, void *opaque, uint64 type);
 void pushHandle(VM *vm, Handle handle);
@@ -378,8 +427,8 @@ void collect(VM *vm);
 
 uint32_t hashValue(Value v);
 
-void printValue(Value v);
-void printObject(Object *obj);
+void printValue(VM *vm, Value v, FILE *file = stdout);
+void printObject(VM *vm, Object *obj, FILE *file = stdout);
 size_t length(Value v);
 
 #define bitsize(o) (sizeof(o)*8)
@@ -408,3 +457,9 @@ void doFile(VM *vm, const char *path, size_t numArgs = 0,
 void call(VM *vm, uint8 numArgs);
 
 VM initVM(bool loadDefaults = true);
+
+void printFuncProtoCode(VM *vm, FunctionPrototype *func);
+
+LineInfo findLineInfo(VM *vm, Value value);
+
+char *getSymbolString(VM *vm, Symbol symbol);

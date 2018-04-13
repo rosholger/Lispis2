@@ -12,33 +12,35 @@ enum TokenType {
     T_LEFT_PAREN,
     T_RIGHT_PAREN,
     T_QUOTE,
-    T_QUASI_QUOTE,
+    T_QUASIQUOTE,
     T_UNQUOTE,
-    T_UNQUOTE_SPLICE,
+    T_UNQUOTE_SPLICING,
     T_BOOLEAN,
     T_STRING,
     T_EOF,
+    T_DOT,
     T_ERROR
 };
 
 struct Token {
     size_t start;
     size_t length;
+    size_t line;
+    size_t column;
     TokenType type;
     union {
         double d;
         bool b;
         char *str;
-        struct {
-            char *symstr;
-            int symid;
-        };
+        int symid;
     };
 };
 
 struct LexState {
     char *prog;
-    size_t pos;
+    size_t pos = 0;
+    size_t line = 1;
+    size_t column = 0;
     Token nextToken;
 };
 

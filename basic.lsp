@@ -1,43 +1,56 @@
-;(define a (lambda (b c) b)) (a true false)
-
-(define testFunc2
-  (lambda (b)
-    (define testFunc
-      (lambda () b))))
-(testFunc2 -.5)
-(let a
-  (lambda (b)
-    (lambda (s v)
-      (if (= s (quote set))
-          (set! b v)
-          b))))
-
-(let z (a true))
-
-;(let quasi-quote-inner (lambda (lst)
-;  (cond ((null? lst) '())
-;        ((= (car lst) 'unquote-splice)
-;          (concat (car lst) (quasi-quote-inner (cdr lst))))
-;        ((= (car lst) 'unquote)
-;          (cons (car lst) (quasi-quote-inner (cdr lst))))
-;        ((= (type (car lst)) 'list)
-;          (cons (list 'quasi-quote (car lst))
-;                (quasi-quote-inner (cdr lst))))
-;(defmacro quasi-quote (lst)
-;  (cond ((= (type lst) 'list)
-;          (quasi-quote-inner lst))))
-
-;`(a b ,c) == (list (quasi-quote a) (quasi-quote b) c) ==
-; (list (quote a) (quote b) c)
-;`(a (b ,f) ,@(c d)) ==
-; (list (quasi-quote a)
-;       (quasi-quote (b (unquote f))) c d) ==
-; (list (quote a) (list (quasi-quote b) f) c d) ==
-; (list (quote a) (list (quote b) f) c d)
-
-(quote (1 (2) () a b c 3 4))
-
-(defmacro test-macro (a b c)
-  (< a b c))
-
-(test-macro 1 2 3)
+(defmacro : (obj key)
+  `(get-slot ,obj ,(list 'quasiquote key)))
+(defmacro :! (obj key value)
+  `(set-slot ,obj ,(list 'quasiquote key) ,value))
+(defmacro ! (obj func . args)
+  (append (list (list ': obj func) obj) args))
+(defmacro range (s e)
+  `{(start ,s) (end ,e) (step 1) (curr 0) (alive true)
+    (update (lambda (this)
+              (let ret (: this curr))
+              (if (: this alive)
+                  (scope
+                   (:! this curr (+ (: this curr) (: this step)))
+                   (if (> ret (: this end))
+                       (:! this alive false))))
+              ret))})
+(defmacro assert (pred? . args)
+  `(if ,pred?
+       true
+       (error ,@args)))
+(define list-iterator (lst)
+  {(curr lst) (alive (not (null? lst)))
+   (update (lambda (this)
+             (let ret '())
+             (if (: this alive)
+                 (scope
+                  (set! ret (car (: this curr)))
+                  (:! this curr (cdr (: this curr)))
+                  (if (null? (: this curr))
+                      (:! this alive false))))
+             ret))})
+(define map (proc lst)
+  (let ret '())
+  (let curr '())
+  (for (elem (list-iterator lst))
+       (if (null? ret)
+           (scope
+            (set! ret (cons (proc elem) ret))
+            (set! curr ret))
+           (scope
+            (set-cdr! curr (cons (proc elem) '()))
+            (set! curr (cdr curr)))))
+  ret)
+(define foldl (proc init lst)
+  (let ret init)
+  (for (elem (list-iterator lst))
+       (set! ret (proc elem ret)))
+  ret)
+(define foldr (proc init lst)
+  (if (null? lst)
+      init
+      (proc (car lst) (foldr proc init (cdr lst)))))
+(println (map (lambda (a) (+ a 1)) '(1 2 3 4 5 6)))
+(println (foldl cons '() '(a b c d e)))
+(println (foldr cons '() '(a b c d e)))
+;(define)

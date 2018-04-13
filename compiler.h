@@ -3,11 +3,19 @@
 #include <cstddef>
 #include <cstdlib>
 
+// Needs child pointer when we make DynamicArray gc'd
+// since the Scope tree has to be a root.
+// (We only need one child at a time since we only compile
+// one scope at a time, and the rest is garbage)
 struct Scope {
     size_t protoID;
     Scope *parent;
     Object *symToReg;
     DynamicArray<size_t> *freeRegisters;
+    Object *labelPositions;
+    DynamicArray<ObjectSlot> *goLabelPositions;
+    // key is the label, value is the code position to patch
+    Object *valueToConstantSlot;
 };
 
 // Do i really need this?
@@ -27,6 +35,10 @@ enum ASTNodeType {
     ASTT_SET,
     ASTT_LIST,
     ASTT_DEFMACRO,
+    ASTT_STRING,
+    ASTT_FOR,
+    ASTT_LABEL,
+    ASTT_GO,
 };
 
 struct ArenaAllocator {
@@ -40,38 +52,32 @@ struct ArenaAllocator {
 struct ASTNode {
     ASTNodeType type;
     bool hasReg;
+    size_t line = 0;
+    size_t column = 0;
     ASTNode(ASTNodeType t, bool b);
-    virtual void traverse() = 0;
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot) = 0;
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot) = 0;
+    virtual void traverse(VM *vm) = 0;
+    virtual void emit(VM *vm, Scope scope) = 0;
+    virtual Value getRegister(VM *vm, Scope scope) = 0;
     virtual void freeRegister(Scope scope) = 0;
-    //virtual size_t getConstantId(VM *vm, Function *func,
     //map<int, size_t> *symToReg) = 0;
 };
 
 struct ASTBody : ASTNode {
     ASTBody();
     DynamicArray<ASTNode *> body;
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
 
 struct ASTSymbol : ASTNode {
     ASTSymbol();
-    char *str;
-    int symid;
+    Value sym;
     Value reg;
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
 
@@ -81,36 +87,31 @@ struct ASTVariable : ASTNode {
     ASTVariable();
     Value symbol;
     bool upvalue;
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
-    void setRegister(VM *vm, Scope scope);
+    virtual void setRegister(VM *vm, Scope scope);
 };
 
 struct ASTArgList : ASTNode {
     ASTArgList();
     DynamicArray<ASTVariable> args;
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    bool vararg;
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
-
 
 struct ASTList : ASTNode {
     ASTList();
     Value reg;
+    bool dotted;
     DynamicArray<ASTNode *> elems;
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
 
@@ -119,11 +120,9 @@ struct ASTLambda : ASTNode {
     ASTArgList argList;
     ASTBody body;
     Value reg;
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
 
@@ -132,11 +131,9 @@ struct ASTDefmacro : ASTNode {
     Value variable;
     ASTArgList argList;
     ASTBody body;
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
 
@@ -145,11 +142,9 @@ struct ASTCall : ASTNode {
     ASTNode *callee;
     DynamicArray<ASTNode *> args;
     Value returnReg;
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
 
@@ -157,11 +152,9 @@ struct ASTDouble : ASTNode {
     ASTDouble();
     double value;
     Value reg;
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
 
@@ -169,11 +162,19 @@ struct ASTBoolean : ASTNode {
     ASTBoolean();
     bool value;
     Value reg;
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
+    virtual void freeRegister(Scope scope);
+};
+
+struct ASTString : ASTNode {
+    ASTString();
+    Value value;
+    Value reg;
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
 
@@ -186,11 +187,9 @@ struct ASTMakeObject : ASTNode {
     ASTMakeObject();
     DynamicArray<MakeObjectSlot> slots;
     Value reg;
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
 
@@ -198,11 +197,9 @@ struct ASTDefine : ASTNode {
     Value var;
     ASTNode *expr;
     ASTDefine();
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
 
@@ -212,11 +209,9 @@ struct ASTIf : ASTNode {
     ASTNode *trueBranch;
     ASTNode *falseBranch;
     ASTIf();
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
 
@@ -224,23 +219,52 @@ struct ASTLet : ASTNode {
     ASTVariable var;
     ASTNode *expr;
     ASTLet();
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
+
+#if 0
+
+struct ASTFor : ASTNode {
+    ASTVariable var;
+    ASTNode *iterExpr;
+    ASTBody body;
+    ASTFor();
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
+    virtual void freeRegister(Scope scope);
+};
+
+#endif
 
 struct ASTSet : ASTNode {
     ASTVariable var;
     ASTNode *expr;
     ASTSet();
-    virtual void traverse();
-    virtual void emit(VM *vm, Scope scope,
-                      Object *valueToConstantSlot);
-    virtual Value getRegister(VM *vm, Scope scope,
-                              Object *valueToConstantSlot);
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
+    virtual void freeRegister(Scope scope);
+};
+
+struct ASTLabel : ASTNode {
+    Value labelSymbol;
+    ASTLabel();
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
+    virtual void freeRegister(Scope scope);
+};
+
+struct ASTGo : ASTNode {
+    Value labelSymbol;
+    ASTGo();
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
     virtual void freeRegister(Scope scope);
 };
 

@@ -57,5 +57,11 @@ public:
  void runTest() { suite_Tests.testQuote(); }
 } testDescription_suite_Tests_testQuote;
 
+static class TestDescription_suite_Tests_testVararg : public CxxTest::RealTestDescription {
+public:
+ TestDescription_suite_Tests_testVararg() : CxxTest::RealTestDescription( Tests_Tests, suiteDescription_Tests, 166, "testVararg" ) {}
+ void runTest() { suite_Tests.testVararg(); }
+} testDescription_suite_Tests_testVararg;
+
 #include <cxxtest/Root.cpp>
 const char* CxxTest::RealWorldDescription::_worldName = "cxxtest";

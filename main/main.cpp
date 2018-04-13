@@ -13,7 +13,7 @@ int main(int argc, char *argv[]) {
     VM vm = initVM();
     doFile(&vm, "./basic.lsp");
     printf("\n");
-    printValue(peek(&vm, -1));
+    printValue(&vm, peek(&vm, -1));
     printf("\n");
     collect(&vm);
     //pushValue(&vm, Value(V_UNDEF));
