@@ -145,6 +145,19 @@ void visitValue(VM *vm, Value *v) {
                     v->pair = (ConsPair *)copyFromTo(vm, &v->pair->gcObj,
                                                      sizeof(ConsPair));
                 }
+                if (v->pair->lineInfo) {
+                    if (v->pair->lineInfo->gcObj.type ==
+                        GC_BROKEN_HEART) {
+                        v->pair->lineInfo =
+                            *(LineInfo **)((&v->object->gcObj)+1);
+                        //fprintf(stderr, "%p\n", v->pair);
+                    } else {
+                        v->pair->lineInfo =
+                            (LineInfo *)copyFromTo(vm,
+                                                   &v->pair->lineInfo->gcObj,
+                                                   sizeof(LineInfo));
+                    }
+                }
                 assert(v->pair->gcObj.type <= GC_BROKEN_HEART);
             }
         } break;
@@ -197,6 +210,9 @@ void visitObject(VM *vm, GCObject *o) {
         assert(false);
     }
     switch (o->type) {
+        case GC_LINE_INFO: {
+            vm->gc.nextToExamine += sizeof(LineInfo);
+        } break;
         case GC_UPVALUE: {
             Upvalue *upvalue = (Upvalue *)o;
             visitValue(vm, &upvalue->closed);
@@ -342,24 +358,6 @@ void collect(VM *vm) {
         }
     }
 
-    for (int64 i = 0; i < (int64)size(&vm->staticDebugInfo); ++i) {
-        switch (vm->staticDebugInfo[i].value.type) {
-            case V_CONS_PAIR: {
-                if (vm->staticDebugInfo[i].value.pair) {
-                    if (vm->staticDebugInfo[i].value.pair->gcObj.type ==
-                        GC_BROKEN_HEART) {
-                        vm->staticDebugInfo[i].value.pair =
-                            *((ConsPair **)(&vm->staticDebugInfo[i].value.pair->gcObj + 1));
-                    } else {
-                        unorderedRemove(&vm->staticDebugInfo, i);
-                        i--;
-                    }
-                }
-            } break;
-            default:break;
-        }
-    }
-    
     munmap(vm->gc.fromSpace, vm->gc.fromSpaceSize);
     size_t numberOfFreedBytes = (numberOfAllocatedBytes -
                                  vm->gc.nextFree);
@@ -405,14 +403,7 @@ Handle reserve(VM *vm, ConsPair *p) {
     assert(p);
     Value v = {V_CONS_PAIR};
     v.pair = p;
-    for (size_t i = 0; i < size(&vm->handles); ++i) {
-        if (vm->handles[i].type == V_UNDEF) {
-            vm->handles[i] = v;
-            return Handle{i};
-        }
-    }
-    add(&vm->handles, v);
-    return Handle{size(&vm->handles)-1};
+    return reserve(vm, v);
 }
 
 void free(VM *vm, Handle handle) {
@@ -434,6 +425,7 @@ Value allocConsPair(VM *vm) {
     Value ret = {V_CONS_PAIR};
     ret.pair = (ConsPair *)alloc(vm, sizeof(ConsPair));
     *ret.pair = ConsPair();
+    ret.pair->lineInfo = 0;
     return ret;
 }
 
@@ -711,6 +703,11 @@ void clear(Object *obj) {
 }
 
 void freeVM(VM *vm) {
+    for (size_t i = 0; i < size(&vm->handles); ++i) {
+        if (vm->handles[i].type != V_UNDEF) {
+            fprintf(stderr, "LEAKING %lu\n", i);
+        }
+    }
     munmap(vm->gc.toSpace, vm->gc.toSpaceSize);
     munmap(vm->gc.fromSpace, vm->gc.fromSpaceSize);
 }
@@ -1480,9 +1477,11 @@ void doString(VM *vm, const char *prog, size_t numArgs, bool verbose) {
 
 void doFile(VM *vm, const char *path, size_t numArgs, bool verbose) {
     pushValue(vm, compileFile(vm, path, verbose));
-    for (size_t i = 0; i < size(&vm->funcProtos); ++i) {
-        printf("\nFunction %lu:\n", i);
-        printFuncProtoCode(vm, &vm->funcProtos[i]);
+    if (verbose) {
+        for (size_t i = 0; i < size(&vm->funcProtos); ++i) {
+            printf("\nFunction %lu:\n", i);
+            printFuncProtoCode(vm, &vm->funcProtos[i]);
+        }
     }
     call(vm, numArgs);
 }
@@ -1901,15 +1900,6 @@ VM initVM(bool loadDefaults) {
     return vm;
 }
 
-LineInfo findLineInfo(VM *vm, Value value) {
-    for (size_t i = 0; i < size(&vm->staticDebugInfo); ++i) {
-        if (vm->staticDebugInfo[i].value == value) {
-            return vm->staticDebugInfo[i];
-        }
-    }
-    assert(false);
-}
-
 Value &getFirstKey(Object *o, Value value) {
     for (size_t i = 0; i < size(&o->slots); ++i) {
         if (o->slots[i].value == value) {
@@ -1928,4 +1918,24 @@ char *getSymbolString(VM *vm, Symbol symbol) {
     Value v = {V_SYMBOL};
     v.sym = symbol;
     return getFirstKey(&vm->symbolTable, v).str;
+}
+
+void setLineInfo(VM *vm, Handle handle, size_t line, size_t column) {
+    assert(type(vm, handle) == V_CONS_PAIR);
+    LineInfo *info = (LineInfo *)alloc(vm, sizeof(LineInfo));
+    info->gcObj.type = GC_LINE_INFO;
+    info->line = line;
+    info->column = column;
+    get(vm, handle).pair->lineInfo = info;
+}
+
+void setLineInfo(VM *vm, Value value, size_t line, size_t column) {
+    Handle tmp = reserve(vm, value);
+    setLineInfo(vm, tmp, line, column);
+    free(vm, tmp);
+}
+
+LineInfo getLineInfo(Value value) {
+    assert(value.type == V_CONS_PAIR);
+    return *value.pair->lineInfo;
 }

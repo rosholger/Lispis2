@@ -4,7 +4,7 @@
 #define kilobytes(b) b*1024
 #define megabytes(kb) kilobytes(kb)*1024
 
-#define HEAP_START_SIZE kilobytes(36)
+#define HEAP_START_SIZE kilobytes(128)
 #define HEAP_START_MAX_SIZE megabytes(1)
 
 struct GC {
@@ -26,6 +26,7 @@ enum GCObjectType {
     //GC_FUNCTION_PROTOTYPE,
     GC_FUNCTION,
     GC_UPVALUE,
+    GC_LINE_INFO,
     GC_BROKEN_HEART,
 };
 

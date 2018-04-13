@@ -11,7 +11,7 @@
 
 int main(int argc, char *argv[]) {
     VM vm = initVM();
-    doFile(&vm, "./basic.lsp");
+    doFile(&vm, "./basic.lsp", 0, false);
     printf("\n");
     printValue(&vm, peek(&vm, -1));
     printf("\n");

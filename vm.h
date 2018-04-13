@@ -198,7 +198,6 @@ struct VM {
     DynamicArray<FunctionPrototype> funcProtos;
     DynamicArray<Value> apiStack;
     DynamicArray<ActivationFrame> frameStack;
-    DynamicArray<LineInfo> staticDebugInfo;
     size_t frameStackTop = 0;
     size_t apiStackTop = 0;
     size_t apiStackBottom = 0;
@@ -258,7 +257,6 @@ struct Value {
         // and we can give quasiquoted stuff the correct lineinfo etc
         struct { // 16 bytes
             ConsPair *pair;
-            LineInfo *lineInfo; // 8 bytes
         };  
         struct { // 16 bytes
             uint64 opaqueType;
@@ -280,6 +278,7 @@ struct Value {
 };
 
 struct LineInfo {
+    GCObject gcObj;
     size_t line;
     size_t column;
     Value value;
@@ -306,12 +305,15 @@ struct ConsPair {
     GCObject gcObj;
     Value car;
     Value cdr;
+    LineInfo *lineInfo; // FUCK EVERYTHING!!
 };
 
 Value at(Value v, size_t idx);
 
 Value allocConsPair(VM *vm);
 Object *allocObject(VM *vm);
+void setLineInfo(VM *vm, Handle handle, size_t line, size_t column);
+void setLineInfo(VM *vm, Value value, size_t line, size_t column);
 Function *allocFunction(VM *vm, size_t protoID);
 Upvalue *allocUpvalue(VM *vm);
 
@@ -460,6 +462,6 @@ VM initVM(bool loadDefaults = true);
 
 void printFuncProtoCode(VM *vm, FunctionPrototype *func);
 
-LineInfo findLineInfo(VM *vm, Value value);
-
 char *getSymbolString(VM *vm, Symbol symbol);
+
+LineInfo getLineInfo(Value value);

@@ -5,7 +5,7 @@
 
 #define error(vm, val, msg)                             \
     do {                                                \
-        LineInfo lineInfo = findLineInfo(vm, val);      \
+        LineInfo lineInfo = getLineInfo(val);           \
         fprintf(stderr, "ERROR at %lu:%lu: " msg,       \
                 lineInfo.line, lineInfo.column);        \
     } while (false)
@@ -480,7 +480,16 @@ ASTSet setToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
 }
 
 void setMacroExpansionLineInfo(VM *vm, Handle tree, LineInfo info) {
-    //if (type(vm, tree) == V_CONS_PAIR && get(vm, tree).pair) {
+    if (type(vm, tree) == V_CONS_PAIR && get(vm, tree).pair) {
+        setLineInfo(vm, tree, info.line, info.column);
+        setMacroExpansionLineInfo(vm, reserve(vm,
+                                              get(vm, tree).pair->car),
+                                  info);
+        setMacroExpansionLineInfo(vm, reserve(vm,
+                                              get(vm, tree).pair->cdr),
+                                  info);
+    }
+    free(vm, tree);
     //info.value = get(vm, tree);
     //add(&vm->staticDebugInfo, info);
     //setMacroExpansionLineInfo(vm, reserve(vm,
@@ -490,7 +499,14 @@ void setMacroExpansionLineInfo(VM *vm, Handle tree, LineInfo info) {
     //get(vm, tree).pair->cdr),
     //info);
     //}
-    free(vm, tree);
+}
+
+void assertLineInfo(VM *vm, Value tree) {
+    if (tree.type == V_CONS_PAIR && tree.pair) {
+        assert(tree.pair->lineInfo);
+        assertLineInfo(vm, tree.pair->car);
+        assertLineInfo(vm, tree.pair->cdr);
+    }
 }
 
 Handle expandMacro(VM *vm, Handle tree) {
@@ -498,8 +514,8 @@ Handle expandMacro(VM *vm, Handle tree) {
     Value argList = get(vm, tree).pair->cdr;
     assert(argList.type == V_CONS_PAIR);
     uint8 numArgs = 0;
-    printValue(vm, get(vm, tree));
-    printf(" becomes ");
+    //printValue(vm, get(vm, tree));
+    //printf(" becomes ");
     while (argList.pair) {
         numArgs++;
         pushValue(vm, argList.pair->car);
@@ -510,11 +526,12 @@ Handle expandMacro(VM *vm, Handle tree) {
     call(vm, numArgs);
     Handle ret = reserve(vm, pop(vm));
     if (type(vm, ret) == V_CONS_PAIR) {
-        //LineInfo info = findLineInfo(vm, get(vm, tree));
-        //setMacroExpansionLineInfo(vm, reserve(vm, get(vm, ret)), info);
+        LineInfo info = getLineInfo(get(vm, tree));
+        setMacroExpansionLineInfo(vm, reserve(vm, get(vm, ret)), info);
     }
-    printValue(vm, get(vm, ret));
-    printf("\n");
+    assertLineInfo(vm, get(vm, ret));
+    //printValue(vm, get(vm, ret));
+    //printf("\n");
     free(vm, tree);
     return ret;
 }
@@ -572,11 +589,13 @@ ASTNode *exprToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
                        get(vm, tree).pair->car == intern(vm, "label")) {
                 ASTLabel *c = alloc<ASTLabel>(arena);
                 *c = labelToAST(vm, tree);
+                free(vm, tree);
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        get(vm, tree).pair->car == intern(vm, "go")) {
                 ASTGo *c = alloc<ASTGo>(arena);
                 *c = goToAST(vm, tree);
+                free(vm, tree);
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        get(vm, tree).pair->car == intern(vm, "defmacro")) {
@@ -706,7 +725,6 @@ void patchGoStatements(VM *vm, Scope scope) {
     s.goLabelPositions = &_newGoLabelPositions;         \
     s.valueToConstantSlot = &_newValueToConstantSlot
 
-
 Value compileString(VM *vm, char *prog, bool verbose) {
     LexState lex = initLexerState(vm, prog);
     Scope topScope;
@@ -716,8 +734,7 @@ Value compileString(VM *vm, char *prog, bool verbose) {
     {
         Value root = allocConsPair(vm);
         Handle handle = reserve(vm, root);
-        LineInfo info = {1, 0, get(vm, handle)};
-        add(&vm->staticDebugInfo, info);
+        setLineInfo(vm, root, 1, 0);
         Handle currTree = handle;
         while (peekToken(&lex).type != T_EOF) {
             freeArena(&arena);
@@ -727,6 +744,9 @@ Value compileString(VM *vm, char *prog, bool verbose) {
                 printValue(vm, get(vm, currTree).pair->car);
                 printf("\n\n");
             }
+
+            assertLineInfo(vm, get(vm, currTree).pair->car);
+            
             node = exprToAST(vm, &arena,
                              reserve(vm, get(vm, currTree).pair->car));
             if (verbose) {
@@ -758,7 +778,6 @@ Value compileString(VM *vm, char *prog, bool verbose) {
     }
     patchGoStatements(vm, topScope);
     freeArena(&arena);
-    clear(&vm->staticDebugInfo);
     Value ret = {V_FUNCTION};
     ret.func = allocFunction(vm, topScope.protoID);
     return ret;

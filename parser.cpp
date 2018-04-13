@@ -114,7 +114,6 @@ Token nextToken(VM *vm, LexState *state) {
                 tok.str[dst] = 0;
             }
 #endif
-            printf("TOK: %.*s\n", (int)tok.length, state->prog+tokStart);
         }
     } else if (state->prog[tokStart] == '.' && tokLength == 1) {
         tok.type = T_DOT;
@@ -214,32 +213,30 @@ void parseObjectLiteralElems(VM *vm, LexState *lex, Handle parent) {
     get(vm, parent).pair->car = p;
     Handle lst = reserve(vm, get(vm, parent).pair->car);
     while (peekToken(lex).type != T_RIGHT_CURLY) {
-        LineInfo info = {peekToken(lex).line, peekToken(lex).column,
-                         get(vm, lst)};
-        add(&vm->staticDebugInfo, info);
+        setLineInfo(vm, lst, peekToken(lex).line, peekToken(lex).column);
         Value p = allocConsPair(vm);
         get(vm, lst).pair->car.type = V_CONS_PAIR;
         get(vm, lst).pair->cdr.type = V_CONS_PAIR;
         get(vm, lst).pair->car = p;
+        Token tok = nextToken(vm, lex);
+        assert(tok.type == T_LEFT_PAREN);
         Handle pair = reserve(vm, get(vm, lst).pair->car);
-        assert(nextToken(vm, lex).type == T_LEFT_PAREN);
+        setLineInfo(vm, pair, tok.line, tok.column);
         { // key
             Value p = allocConsPair(vm);
             get(vm, pair).pair->car.type = V_CONS_PAIR;
             get(vm, pair).pair->cdr.type = V_CONS_PAIR;
             get(vm, pair).pair->car = p;
-            LineInfo info = {peekToken(lex).line, peekToken(lex).column,
-                             get(vm, lst).pair->car};
-            add(&vm->staticDebugInfo, info);
+            setLineInfo(vm, get(vm, pair).pair->car, peekToken(lex).line,
+                        peekToken(lex).column);
             Symbol quasiquote = intern(vm, "quasiquote");
             get(vm, pair).pair->car.pair->car.type = V_SYMBOL;
             get(vm, pair).pair->car.pair->car.sym = quasiquote;
             p = allocConsPair(vm);
             get(vm, pair).pair->car.pair->cdr.type = V_CONS_PAIR;
             get(vm, pair).pair->car.pair->cdr = p;
-            info = {peekToken(lex).line, peekToken(lex).column,
-                    get(vm, lst).pair->car.pair->cdr};
-            add(&vm->staticDebugInfo, info);
+            setLineInfo(vm, get(vm, pair).pair->car.pair->cdr,
+                        peekToken(lex).line, peekToken(lex).column);
             Handle rst = reserve(vm,
                                  get(vm, pair).pair->car.pair->cdr);
             parseExpr(vm, lex, rst);
@@ -248,10 +245,11 @@ void parseObjectLiteralElems(VM *vm, LexState *lex, Handle parent) {
         p = allocConsPair(vm);
         get(vm, pair).pair->cdr.type = V_CONS_PAIR;
         get(vm, pair).pair->cdr = p;
-        info = {peekToken(lex).line, peekToken(lex).column,
-                get(vm, pair).pair->cdr};
-        add(&vm->staticDebugInfo, info);
-        parseExpr(vm, lex, reserve(vm, get(vm, pair).pair->cdr)); // value
+        setLineInfo(vm, get(vm, pair).pair->cdr,
+                    peekToken(lex).line, peekToken(lex).column);
+        Handle value = reserve(vm, get(vm, pair).pair->cdr);
+        parseExpr(vm, lex, value); // value
+        free(vm, value);
         assert(nextToken(vm, lex).type == T_RIGHT_PAREN);
         free(vm, pair);
         if (peekToken(lex).type != T_RIGHT_CURLY) {
@@ -307,12 +305,13 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
             p = allocConsPair(vm);
             get(vm, parent).pair->car.pair->cdr.type = V_CONS_PAIR;
             get(vm, parent).pair->car.pair->cdr = p;
+            setLineInfo(vm, get(vm, parent).pair->car.pair->cdr,
+                        peekToken(lex).line, peekToken(lex).column);
             Handle rst = reserve(vm,
                                  get(vm, parent).pair->car.pair->cdr);
             parseObjectLiteralElems(vm, lex, rst);
-            LineInfo info = {tok.line, tok.column,
-                             get(vm, parent).pair->car};
-            add(&vm->staticDebugInfo, info);
+            setLineInfo(vm, get(vm, parent).pair->car,
+                        tok.line, tok.column);
             free(vm, rst);
         } break;
         case T_LEFT_PAREN: {
@@ -321,6 +320,8 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
                 get(vm, parent).pair->car.type = V_CONS_PAIR;
                 Value p = allocConsPair(vm);
                 get(vm, parent).pair->car = p;
+                setLineInfo(vm, get(vm, parent).pair->car,
+                            tok.line, tok.column);
                 Handle car = reserve(vm, get(vm, parent).pair->car);
                 parseList(vm, lex, car);
                 free(vm, car);
@@ -337,12 +338,13 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
             p = allocConsPair(vm);
             get(vm, parent).pair->car.pair->cdr.type = V_CONS_PAIR;
             get(vm, parent).pair->car.pair->cdr = p;
+            setLineInfo(vm, get(vm, parent).pair->car.pair->cdr,
+                        peekToken(lex).line, peekToken(lex).column);
             Handle rst = reserve(vm,
                                  get(vm, parent).pair->car.pair->cdr);
             parseExpr(vm, lex, rst);
-            LineInfo info = {tok.line, tok.column,
-                             get(vm, parent).pair->car};
-            add(&vm->staticDebugInfo, info);
+            setLineInfo(vm, get(vm, parent).pair->car,
+                        tok.line, tok.column);
             free(vm, rst);
         } break;
         case T_QUASIQUOTE: {
@@ -355,12 +357,13 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
             p = allocConsPair(vm);
             get(vm, parent).pair->car.pair->cdr.type = V_CONS_PAIR;
             get(vm, parent).pair->car.pair->cdr = p;
+            setLineInfo(vm, get(vm, parent).pair->car.pair->cdr,
+                        peekToken(lex).line, peekToken(lex).column);
             Handle rst = reserve(vm,
                                  get(vm, parent).pair->car.pair->cdr);
             parseExpr(vm, lex, rst);
-            LineInfo info = {tok.line, tok.column,
-                             get(vm, parent).pair->car};
-            add(&vm->staticDebugInfo, info);
+            setLineInfo(vm, get(vm, parent).pair->car,
+                        tok.line, tok.column);
             free(vm, rst);
         } break;
         case T_UNQUOTE: {
@@ -373,12 +376,13 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
             p = allocConsPair(vm);
             get(vm, parent).pair->car.pair->cdr.type = V_CONS_PAIR;
             get(vm, parent).pair->car.pair->cdr = p;
+            setLineInfo(vm, get(vm, parent).pair->car.pair->cdr,
+                        peekToken(lex).line, peekToken(lex).column);
             Handle rst = reserve(vm,
                                  get(vm, parent).pair->car.pair->cdr);
             parseExpr(vm, lex, rst);
-            LineInfo info = {tok.line, tok.column,
-                             get(vm, parent).pair->car};
-            add(&vm->staticDebugInfo, info);
+            setLineInfo(vm, get(vm, parent).pair->car,
+                        tok.line, tok.column);
             free(vm, rst);
         } break;
         case T_UNQUOTE_SPLICING: {
@@ -391,12 +395,13 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
             p = allocConsPair(vm);
             get(vm, parent).pair->car.pair->cdr.type = V_CONS_PAIR;
             get(vm, parent).pair->car.pair->cdr = p;
+            setLineInfo(vm, get(vm, parent).pair->car.pair->cdr,
+                        peekToken(lex).line, peekToken(lex).column);
             Handle rst = reserve(vm,
                                  get(vm, parent).pair->car.pair->cdr);
             parseExpr(vm, lex, rst);
-            LineInfo info = {tok.line, tok.column,
-                             get(vm, parent).pair->car};
-            add(&vm->staticDebugInfo, info);
+            setLineInfo(vm, get(vm, parent).pair->car,
+                        tok.line, tok.column);
             free(vm, rst);
         } break;
         case T_RIGHT_PAREN: {
@@ -422,9 +427,7 @@ void parseList(VM *vm, LexState *lex, Handle parent) {
     Token tok = peekToken(lex);
     Handle currParent = reserve(vm, get(vm, parent));
     while (tok.type != T_RIGHT_PAREN) {
-        LineInfo info = {tok.line, tok.column,
-                         get(vm, currParent)};
-        add(&vm->staticDebugInfo, info);
+        setLineInfo(vm, currParent, tok.line, tok.column);
         parseExpr(vm, lex, currParent);
         tok = peekToken(lex);
         if (tok.type == T_DOT) {
