@@ -5,3 +5,6 @@ lispis2
 *~
 vgcore.*
 \#*\#
+*.out
+server
+repl
