@@ -1,0 +1,23 @@
+(defmacro range (s e)
+  `{(start ,s) (end ,e) (step 1) (curr ,s) (alive true)
+    (update (lambda (this)
+              (let ret (get-slot this 'curr))
+              (if (get-slot this 'alive)
+                  (scope
+                   (set-slot! this 'curr (+ (get-slot this 'curr)
+                                            (get-slot this 'step)))
+                   (if (> ret (get-slot this 'end))
+                       (set-slot! this 'alive false))))
+              ret))})
+
+(defmacro reverse-range (s e)
+  `{(start ,s) (end ,e) (step 1) (curr ,s) (alive true)
+    (update (lambda (this)
+              (let ret (get-slot this 'curr))
+              (if (get-slot this 'alive)
+                  (scope
+                   (set-slot! this 'curr (- (get-slot this 'curr)
+                                            (get-slot this 'step)))
+                   (if (< ret (get-slot this 'end))
+                       (set-slot! this 'alive false))))
+              ret))})

@@ -2,14 +2,44 @@
 #include "parser.h"
 #include <climits>
 #include <cstdio>
+#include "common.h"
 
-#define error(vm, val, msg)                             \
-    do {                                                \
-        LineInfo lineInfo = getLineInfo(val);           \
-        fprintf(stderr, "ERROR at %lu:%lu: " msg,       \
-                lineInfo.line, lineInfo.column);        \
-        assert(false);                                  \
+#define error(vm, val, msg)                                 \
+    do {                                                    \
+        LineInfo lineInfo = getLineInfo(val);               \
+        l_fprintf(stderr, "ERROR at %lu:%lu: " msg,         \
+                  lineInfo.line, lineInfo.column);          \
+        assert(false);                                      \
     } while (false)
+
+#define lerror(vm, val, msg, lrsp, r)                       \
+    do {                                                    \
+        LineInfo lineInfo = getLineInfo(val);               \
+        pushStringV(vm, "ERROR at %lu:%lu: " msg,           \
+                    lineInfo.line, lineInfo.column);        \
+        *lrsp = LRS_COMPILETIME_ERROR;                      \
+        return r;                                           \
+    } while (false)
+
+#define errorStr(vm, lrsp, r, str, ...)                   \
+    do {                                                \
+        pushStringV(vm, str, ##__VA_ARGS__);            \
+        *lrsp = LRS_COMPILETIME_ERROR;                  \
+        assert(false);                                      \
+    } while(false)
+
+#define STRINGIFY(X) #X
+#define TOSTRING(X) STRINGIFY(X)
+#define lassertStr(vm, lrsp, b, r, str, ...)                            \
+    do {                                                                \
+        if (!(b)) {                                                     \
+            errorStr(vm, lrsp, r, __FILE__ ":" TOSTRING(__LINE__)       \
+                     ": Assertion `" #b                                 \
+                     "' failed.\n"                                      \
+                     str, ##__VA_ARGS__);                               \
+        }                                                               \
+    } while(false)
+
 
 #define firstInListIsType(tree, p_type)                                \
     ((get(vm, (tree)).pair &&                                          \
@@ -193,7 +223,8 @@ ASTString stringToAST(Value tree, size_t line, size_t column) {
     return ret;
 }
 
-ASTNode *exprToAST(VM *vm, ArenaAllocator *arena, Handle tree);
+ASTNode *exprToAST(VM *vm, ArenaAllocator *arena, Handle tree,
+                   const char *file, LispisReturnStatus *lrs);
 
 #define setDebugInfo(vm, value, node)                   \
     do {                                                \
@@ -202,26 +233,42 @@ ASTNode *exprToAST(VM *vm, ArenaAllocator *arena, Handle tree);
         (node).column = lineInfo.column;                \
     } while(false)
 
-ASTCall callToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
+ASTCall callToAST(VM *vm, ArenaAllocator *arena, Handle tree,
+                  const char *file, LispisReturnStatus *lrs) {
     assert(type(vm, tree) == V_CONS_PAIR);
     ASTCall ret;
     if (length(get(vm, tree)) < 1) {
-        error(vm, get(vm, tree), "calling to nothing does not work!\n");
+        free(vm, tree);
+        lerror(vm, get(vm, tree), "calling to nothing does not work!\n",
+               lrs, ret);
     }
     setDebugInfo(vm, get(vm, tree), ret);
     ret.callee = exprToAST(vm, arena, reserve(vm,
-                                              get(vm, tree).pair->car));
+                                              get(vm, tree).pair->car),
+                           file, lrs);
+    if (*lrs != LRS_OK) {
+        free(vm, tree);
+        return ret;
+    }
+    // FIXME: Change to lassertStr
     assert(get(vm, tree).pair->cdr.type == V_CONS_PAIR);
     Handle args = reserve(vm, get(vm, tree).pair->cdr);
     while (get(vm, args).pair) {
         add(&ret.args, exprToAST(vm, arena,
-                                 reserve(vm, get(vm, args).pair->car)));
+                                 reserve(vm, get(vm, args).pair->car),
+                                 file, lrs));
+        if (*lrs != LRS_OK) {
+            free(vm, tree);
+            free(vm, args);
+            return ret;
+        }
         Handle tmp = reserve(vm, get(vm, args).pair->cdr);
         free(vm, args);
         args = tmp;
     }
     free(vm, args);
     free(vm, tree);
+    *lrs = LRS_OK;
     return ret;
 }
 
@@ -257,80 +304,120 @@ ASTArgList argListToAST(VM *vm, Handle tree, size_t line, size_t column) {
     return ret;
 }
 
-ASTLabel labelToAST(VM *vm, Handle tree) {
+ASTLabel labelToAST(VM *vm, Handle tree, LispisReturnStatus *lrs) {
+    ASTLabel ret;
     assert(type(vm, tree) == V_CONS_PAIR);
     if (length(get(vm, tree)) < 2) {
-        error(vm, get(vm, tree), "label needs a symbol\n");
+        lerror(vm, get(vm, tree), "label needs a symbol\n", lrs, ret);
     }
     if (at(get(vm, tree), 1).type != V_SYMBOL) {
-        error(vm, get(vm, tree), "label needs a symbol\n");
+        lerror(vm, get(vm, tree), "label needs a symbol\n", lrs, ret);
     }
     assert(firstInListIsType(tree, V_SYMBOL));
     assert(get(vm, tree).pair->car == intern(vm, "label"));
-    ASTLabel ret;
     setDebugInfo(vm, get(vm, tree), ret);
     ret.labelSymbol = at(get(vm, tree), 1);
     return ret;
 }
 
-ASTGo goToAST(VM *vm, Handle tree) {
+ASTGo goToAST(VM *vm, Handle tree, LispisReturnStatus *lrs) {
+    ASTGo ret;
     assert(type(vm, tree) == V_CONS_PAIR);
     if (length(get(vm, tree)) < 2) {
-        error(vm, get(vm, tree), "go needs a symbol\n");
+        lerror(vm, get(vm, tree), "go needs a symbol\n", lrs, ret);
     }
     if (at(get(vm, tree), 1).type != V_SYMBOL) {
-        error(vm, get(vm, tree), "go needs a symbol\n");
+        lerror(vm, get(vm, tree), "go needs a symbol\n", lrs, ret);
     }
     assert(firstInListIsType(tree, V_SYMBOL));
     assert(get(vm, tree).pair->car == intern(vm, "go"));
-    ASTGo ret;
     setDebugInfo(vm, get(vm, tree), ret);
     ret.labelSymbol = at(get(vm, tree), 1);
     return ret;
 }
 
-ASTIf ifToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
+ASTCrash crashToAST(VM *vm, ArenaAllocator *arena,
+                    Handle tree, const char *file,
+                    LispisReturnStatus *lrs) {
+    ASTCrash ret;
     assert(type(vm, tree) == V_CONS_PAIR);
+    assert(firstInListIsType(tree, V_SYMBOL));
+    assert(get(vm, tree).pair->car == intern(vm, "crash!"));
+    if (length(get(vm, tree)) < 2) {
+        lerror(vm, get(vm, tree), "crash needs an expression argument\n",
+               lrs, ret);
+    }
+    setDebugInfo(vm, get(vm, tree), ret);
+    ret.crashvalue = exprToAST(vm, arena, reserve(vm, at(get(vm, tree),
+                                                         1)), file,
+                               lrs);
+    return ret;
+}
+
+ASTIf ifToAST(VM *vm, ArenaAllocator *arena, Handle tree,
+              const char *file, LispisReturnStatus *lrs) {
+    assert(type(vm, tree) == V_CONS_PAIR);
+    ASTIf ret;
     if (length(get(vm, tree)) < 3) {
-        error(vm, get(vm, tree),
-              "if needs atleast predicate and a true branch\n");
+        lerror(vm, get(vm, tree),
+               "if needs atleast predicate and a true branch\n", lrs,
+               ret);
     }
     assert(firstInListIsType(tree, V_SYMBOL));
     assert(get(vm, tree).pair->car == intern(vm, "if"));
-    ASTIf ret;
     setDebugInfo(vm, get(vm, tree), ret);
-    ret.pred = exprToAST(vm, arena, reserve(vm, at(get(vm, tree), 1)));
-    ret.trueBranch = exprToAST(vm, arena, reserve(vm, at(get(vm, tree),
-                                                         2)));
+    ret.pred = exprToAST(vm, arena, reserve(vm, at(get(vm, tree), 1)),
+                         file, lrs);
+    if (*lrs != LRS_OK) {
+        free(vm, tree);
+        return ret;
+    }
+    ret.trueBranch = exprToAST(vm, arena,
+                               reserve(vm, at(get(vm, tree), 2)),
+                               file, lrs);
+    if (*lrs != LRS_OK) {
+        free(vm, tree);
+        return ret;
+    }
     if (length(get(vm, tree)) == 4) {
-        ret.falseBranch = exprToAST(vm, arena, reserve(vm,
-                                                       at(get(vm, tree),
-                                                          3)));
+        ret.falseBranch = exprToAST(vm, arena,
+                                    reserve(vm, at(get(vm, tree), 3)),
+                                    file, lrs);
+        if (*lrs != LRS_OK) {
+            free(vm, tree);
+            return ret;
+        }
     } else {
         ret.falseBranch = 0;
     }
     free(vm, tree);
+    *lrs = LRS_OK;
     return ret;
 }
 
-ASTBody bodyToAST(VM *vm, ArenaAllocator *arena, Handle tree);
+ASTBody bodyToAST(VM *vm, ArenaAllocator *arena, Handle tree,
+                  const char *file);
 
-ASTLambda lambdaToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
+ASTLambda lambdaToAST(VM *vm, ArenaAllocator *arena, Handle tree,
+                      const char *file) {
     ASTLambda ret;
-    ret.nameSymbol = intern(vm, "anonymous");
+    ret.file = strdup(file);
+    ret.nameSymbol = intern(vm, "*anonymous*");
     setDebugInfo(vm, get(vm, tree), ret);
     ret.argList = argListToAST(vm,
                                reserve(vm, get(vm, tree).pair->car),
                                ret.line, ret.column);
-    ret.body = bodyToAST(vm, arena, reserve(vm,
-                                            get(vm, tree).pair->cdr));
+    ret.body = bodyToAST(vm, arena,
+                         reserve(vm, get(vm, tree).pair->cdr), file);
     free(vm, tree);
     return ret;
 }
 
-ASTDefmacro defmacroToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
+ASTDefmacro defmacroToAST(VM *vm, ArenaAllocator *arena, Handle tree,
+                          const char *file) {
     assert(type(vm, tree) == V_CONS_PAIR);
     ASTDefmacro ret;
+    ret.file = strdup(file);
     if (length(get(vm, tree)) < 4) {
         error(vm, get(vm, tree),
               "defmacro needs a variable, "
@@ -341,7 +428,7 @@ ASTDefmacro defmacroToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
     setDebugInfo(vm, get(vm, tree), ret);
     Value afterDefmacroSym = get(vm, tree).pair->cdr;
     if (afterDefmacroSym.pair->car.type != V_SYMBOL) {
-        fprintf(stderr, "defmacro variable not a symbol!");
+        l_fprintf(stderr, "defmacro variable not a symbol!");
         assert(false);
     }
     ret.variable = afterDefmacroSym.pair->car;
@@ -351,13 +438,15 @@ ASTDefmacro defmacroToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
                      ret.line, ret.column);
     ret.body = bodyToAST(vm, arena,
                          reserve(vm,
-                                 afterDefmacroSym.pair->cdr.pair->cdr));
+                                 afterDefmacroSym.pair->cdr.pair->cdr),
+                         file);
     free(vm, tree);
     return ret;
 }
 
-ASTNode *quotedToAST(ArenaAllocator *arena, Value tree, size_t line,
-                     size_t column) {
+ASTNode *quotedToAST(VM *vm, ArenaAllocator *arena,
+                     Value tree, size_t line,
+                     size_t column, LispisReturnStatus *lrs) {
     ASTNode *ret = 0;
     switch (tree.type) {
         case V_DOUBLE: {
@@ -390,42 +479,54 @@ ASTNode *quotedToAST(ArenaAllocator *arena, Value tree, size_t line,
             }
             c->dotted = false;
             while (tree.type == V_CONS_PAIR && tree.pair) {
-                add(&c->elems, quotedToAST(arena, tree.pair->car,
-                                           line, column));
+                add(&c->elems, quotedToAST(vm, arena, tree.pair->car,
+                                           line, column, lrs));
                 tree = tree.pair->cdr;
             }
             if (tree.type != V_CONS_PAIR) {
                 c->dotted = true;
-                add(&c->elems, quotedToAST(arena, tree, line, column));
+                add(&c->elems,
+                    quotedToAST(vm, arena, tree, line, column, lrs));
             }
             ret = c;
         } break;
         default: {
-            // FIXME
-            fprintf(stderr, "ERROR at %lu:%lu: %d cant be quoted yet\n",
-                    line, column, tree.type);
-            assert(false);
+            lassertStr(vm, lrs, false, 0, "ERROR at %lu:%lu: %d cant be quoted yet\n");
         } break;
     }
+    *lrs = LRS_OK;
     return ret;
 }
 
-MakeObjectSlot makeObjectSlot(VM *vm, ArenaAllocator *arena, Handle tree) {
+MakeObjectSlot makeObjectSlot(VM *vm, ArenaAllocator *arena, Handle tree,
+                              const char *file) {
     MakeObjectSlot ret;
     if (type(vm, tree) != V_CONS_PAIR ||
         length(get(vm, tree)) != 2) {
         // FIXME
-        fprintf(stderr, "ERROR: make-object's argument has to be an associative list\n");
+        l_fprintf(stderr, "ERROR: make-object's argument has to be an associative list\n");
         assert(false);
     }
-    ret.key = exprToAST(vm, arena, reserve(vm, get(vm, tree).pair->car));
+    LispisReturnStatus lrs = LRS_OK;
+    ret.key = exprToAST(vm, arena, reserve(vm, get(vm, tree).pair->car),
+                        file, &lrs);
+    if (lrs != LRS_OK) {
+        printValue(vm, pop(vm), stderr);
+        assert(false);
+    }
     ret.value = exprToAST(vm, arena,
-                          reserve(vm, get(vm, tree).pair->cdr.pair->car));
+                          reserve(vm, get(vm, tree).pair->cdr.pair->car),
+                          file, &lrs);
+    if (lrs != LRS_OK) {
+        printValue(vm, pop(vm), stderr);
+        assert(false);
+    }
     free(vm, tree);
     return ret;
 }
 
-ASTMakeObject makeObjectToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
+ASTMakeObject makeObjectToAST(VM *vm, ArenaAllocator *arena, Handle tree,
+                              const char *file) {
     ASTMakeObject ret;
     setDebugInfo(vm, get(vm, tree), ret);
     if (type(vm, tree) != V_CONS_PAIR) {
@@ -436,7 +537,8 @@ ASTMakeObject makeObjectToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
     for (size_t i = 0; get(vm, tree).pair; ++i) {
         ret.slots[i] = makeObjectSlot(vm, arena,
                                       reserve(vm, get(vm,
-                                                      tree).pair->car));
+                                                      tree).pair->car),
+                                      file);
         Handle tmp = reserve(vm, get(vm, tree).pair->cdr);
         free(vm, tree);
         tree = tmp;
@@ -445,7 +547,8 @@ ASTMakeObject makeObjectToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
     return ret;
 }
 
-ASTDefine defineToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
+ASTDefine defineToAST(VM *vm, ArenaAllocator *arena, Handle tree,
+                      const char *file) {
     ASTDefine ret;
     assert(type(vm, tree) == V_CONS_PAIR);
     assert(get(vm, tree).pair);
@@ -458,14 +561,20 @@ ASTDefine defineToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
     // FIXME
     setDebugInfo(vm, get(vm, tree), ret);
     ret.var = get(vm, tree).pair->car;
+    LispisReturnStatus lrs = LRS_OK;
     if (length(get(vm, tree)) == 2) {
         ret.expr = exprToAST(vm, arena,
                              reserve(vm,
-                                     get(vm, tree).pair->cdr.pair->car));
+                                     get(vm, tree).pair->cdr.pair->car),
+                             file, &lrs);
+        if (lrs != LRS_OK) {
+            printValue(vm, pop(vm), stderr);
+            assert(false);
+        }
     } else if (length(get(vm, tree)) > 2) {
         ASTLambda *p = alloc<ASTLambda>(arena);
         Handle lambdaPart = reserve(vm, get(vm, tree).pair->cdr);
-        *p = lambdaToAST(vm, arena, lambdaPart);
+        *p = lambdaToAST(vm, arena, lambdaPart, file);
         setDebugInfo(vm, get(vm, tree), *p);
         p->nameSymbol = ret.var.sym;
         ret.expr = p;
@@ -477,7 +586,8 @@ ASTDefine defineToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
     return ret;
 }
 
-ASTLet letToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
+ASTLet letToAST(VM *vm, ArenaAllocator *arena, Handle tree,
+                const char *file, LispisReturnStatus *lrs) {
     ASTLet ret;
     assert(type(vm, tree) == V_CONS_PAIR);
     assert(firstInListIsType(tree, V_SYMBOL));
@@ -486,36 +596,40 @@ ASTLet letToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
     ret.var = variableToAST(at(get(vm, tree), 1), ret.line, ret.column);
     if (length(get(vm, tree)) == 3) {
         ret.expr = exprToAST(vm, arena,
-                             reserve(vm, at(get(vm, tree), 2)));
+                             reserve(vm, at(get(vm, tree), 2)), file,
+                             lrs);
     } else if (length(get(vm, tree)) > 3) {
         ASTLambda *p = alloc<ASTLambda>(arena);
         Handle lambdaPart = reserve(vm,
                     get(vm, tree).pair->cdr.pair->cdr);
-        *p = lambdaToAST(vm, arena, lambdaPart);
+        *p = lambdaToAST(vm, arena, lambdaPart, file);
         setDebugInfo(vm, get(vm, tree), *p);
         p->nameSymbol = ret.var.symbol.sym;
         ret.expr = p;
     } else {
-        error(vm, get(vm, tree),
-              "let needs both a symbol and an expression!\n");
+        free(vm, tree);
+        lerror(vm, get(vm, tree),
+               "let needs both a symbol and an expression!\n", lrs, ret);
     }
     free(vm, tree);
     return ret;
 }
 
-ASTSet setToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
+ASTSet setToAST(VM *vm, ArenaAllocator *arena, Handle tree,
+                const char *file, LispisReturnStatus *lrs) {
     ASTSet ret;
     assert(type(vm, tree) == V_CONS_PAIR);
     if (length(get(vm, tree)) != 3) {
-        error(vm, get(vm, tree),
-              "set! needs both a symbol and an expression!\n");
+        free(vm, tree);
+        lerror(vm, get(vm, tree),
+               "set! needs both a symbol and an expression!\n", lrs, ret);
     }
     setDebugInfo(vm, get(vm, tree), ret);
     assert(firstInListIsType(tree, V_SYMBOL));
     assert(get(vm, tree).pair->car == intern(vm, "set!"));
     ret.var = variableToAST(at(get(vm, tree), 1), ret.line, ret.column);
     ret.expr = exprToAST(vm, arena,
-                         reserve(vm, at(get(vm, tree), 2)));
+                         reserve(vm, at(get(vm, tree), 2)), file, lrs);
     free(vm, tree);
     return ret;
 }
@@ -550,21 +664,31 @@ void assertLineInfo(VM *vm, Value tree) {
     }
 }
 
-Handle expandMacro(VM *vm, Handle tree) {
+Handle expandMacro(VM *vm, Handle tree, LispisReturnStatus *lrs) {
     Value macro = get(&vm->macros, get(vm, tree).pair->car);
     Value argList = get(vm, tree).pair->cdr;
     assert(argList.type == V_CONS_PAIR);
     uint8 numArgs = 0;
-    //printValue(vm, get(vm, tree));
-    //printf(" becomes ");
     while (argList.pair) {
         numArgs++;
         pushValue(vm, argList.pair->car);
         argList = argList.pair->cdr;
-        assert(argList.type == V_CONS_PAIR);
+        Handle nullHandle{12345678};
+        LineInfo lf = getLineInfo(get(vm, tree));
+        lassertStr(vm, lrs, argList.type == V_CONS_PAIR,
+                   nullHandle, "ERROR at %lu:%lu: Dotted macro call",
+                   lf.line, lf.column);
     }
     pushValue(vm, macro);
-    call(vm, numArgs);
+    *lrs = call(vm, numArgs);
+
+    if (*lrs != LRS_OK) {
+        free(vm, tree);
+        *lrs = LRS_MACRO_ERROR;
+        Handle nullHandle{12345678};
+        return nullHandle;
+    }
+        
     Handle ret = reserve(vm, pop(vm));
     if (type(vm, ret) == V_CONS_PAIR) {
         LineInfo info = getLineInfo(get(vm, tree));
@@ -572,13 +696,13 @@ Handle expandMacro(VM *vm, Handle tree) {
         setLineInfo(vm, ret, info.line, info.column);
     }
     assertLineInfo(vm, get(vm, ret));
-    //printValue(vm, get(vm, ret));
-    //printf("\n");
     free(vm, tree);
+    *lrs = LRS_OK;
     return ret;
 }
 
-ASTNode *exprToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
+ASTNode *exprToAST(VM *vm, ArenaAllocator *arena, Handle tree,
+                   const char *file, LispisReturnStatus *lrs) {
     // We need the previouse expressions lineinfo to give to
     // doubleToAST et. al.
     ASTNode *ret = 0;
@@ -614,118 +738,183 @@ ASTNode *exprToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
                 ASTLambda *c = alloc<ASTLambda>(arena);
                 assert(type(vm, tree) == V_CONS_PAIR);
                 if (length(get(vm, tree)) < 3) {
-                    error(vm, get(vm, tree),
-                          "lambda needs both an argument"
-                          " list and a body!\n");
+                    lerror(vm, get(vm, tree),
+                           "lambda needs both an argument"
+                           " list and a body!\n", lrs, 0);
                 }
-                assert(firstInListIsType(tree, V_SYMBOL));
-
                 *c = lambdaToAST(vm, arena,
-                                 reserve(vm, get(vm, tree).pair->cdr));
+                                 reserve(vm, get(vm, tree).pair->cdr),
+                                 file);
                 setDebugInfo(vm, get(vm, tree), *c);
                 free(vm, tree);
+                if (*lrs != LRS_OK) {
+                    return 0;
+                }
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        get(vm, tree).pair->car == intern(vm, "if")) {
                 ASTIf *c = alloc<ASTIf>(arena);
-                *c = ifToAST(vm, arena, tree);
+                *c = ifToAST(vm, arena, tree, file, lrs);
+                if (*lrs != LRS_OK) {
+                    return 0;
+                }
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        get(vm, tree).pair->car == intern(vm, "label")) {
                 ASTLabel *c = alloc<ASTLabel>(arena);
-                *c = labelToAST(vm, tree);
+                *c = labelToAST(vm, tree, lrs);
                 free(vm, tree);
+                if (*lrs != LRS_OK) {
+                    return 0;
+                }
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        get(vm, tree).pair->car == intern(vm, "go")) {
                 ASTGo *c = alloc<ASTGo>(arena);
-                *c = goToAST(vm, tree);
+                *c = goToAST(vm, tree, lrs);
                 free(vm, tree);
+                if (*lrs != LRS_OK) {
+                    return 0;
+                }
+                ret = c;
+            } else if (firstInListIsType(tree, V_SYMBOL) &&
+                       get(vm, tree).pair->car == intern(vm, "crash!")) {
+                ASTCrash *c = alloc<ASTCrash>(arena);
+                *c = crashToAST(vm, arena, tree, file, lrs);
+                free(vm, tree);
+                if (*lrs != LRS_OK) {
+                    return 0;
+                }
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        get(vm, tree).pair->car == intern(vm, "defmacro")) {
                 ASTDefmacro *c = alloc<ASTDefmacro>(arena);
-                *c = defmacroToAST(vm, arena, tree);
+                *c = defmacroToAST(vm, arena, tree, file);
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        get(vm, tree).pair->car == intern(vm, "let")) {
                 ASTLet *c = alloc<ASTLet>(arena);
-                *c = letToAST(vm, arena, tree);
+                *c = letToAST(vm, arena, tree, file, lrs);
+                if (*lrs != LRS_OK) {
+                    return 0;
+                }
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        get(vm, tree).pair->car == intern(vm, "set!")) {
                 ASTSet *c = alloc<ASTSet>(arena);
-                *c = setToAST(vm, arena, tree);
+                *c = setToAST(vm, arena, tree, file, lrs);
+                if (*lrs != LRS_OK) {
+                    return 0;
+                }
                 ret = c;
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        get(vm, tree).pair->car == intern(vm, "scope")) {
                 ASTBody *c = alloc<ASTBody>(arena);
                 *c = bodyToAST(vm, arena,
-                               reserve(vm, get(vm, tree).pair->cdr));
+                               reserve(vm, get(vm, tree).pair->cdr),
+                               file);
                 ret = c;
                 free(vm, tree);
+                if (*lrs != LRS_OK) {
+                    return 0;
+                }
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        get(vm, tree).pair->car == intern(vm, "define")) {
                 if (length(get(vm, tree)) < 3) {
-                    error(vm, get(vm, tree),
-                          "define takes two arguments!\n");
+                    lerror(vm, get(vm, tree),
+                           "define takes two arguments!\n", lrs, 0);
                 }
                 ASTDefine *c = alloc<ASTDefine>(arena);
                 *c = defineToAST(vm, arena,
-                                 reserve(vm, get(vm, tree).pair->cdr));
+                                 reserve(vm, get(vm, tree).pair->cdr),
+                                 file);
                 ret = c;
                 free(vm, tree);
+                if (*lrs != LRS_OK) {
+                    return 0;
+                }
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        get(vm, tree).pair->car == intern(vm, "quote")) {
                 if (length(get(vm, tree)) != 2) {
-                    error(vm, get(vm, tree),
-                          "quote takes only one argument!\n");
+                    lerror(vm, get(vm, tree),
+                           "quote takes only one argument!\n", lrs, 0);
                 }
-                ret = quotedToAST(arena, at(get(vm, tree), 1),
-                                  lineInfo.line, lineInfo.column);
+                ret = quotedToAST(vm, arena, at(get(vm, tree), 1),
+                                  lineInfo.line, lineInfo.column, lrs);
                 free(vm, tree);
+                if (*lrs != LRS_OK) {
+                    return 0;
+                }
             } else if (firstInListIsType(tree, V_SYMBOL) &&
                        get(vm, tree).pair->car ==
                        intern(vm, "make-object")) {
                 if (length(get(vm, tree)) != 2) {
-                    error(vm, get(vm, tree),
-                          "make-object takes only one argument!\n");
+                    lerror(vm, get(vm, tree),
+                           "make-object takes only one argument!\n", lrs,
+                           0);
                 }
                 ASTMakeObject *c = alloc<ASTMakeObject>(arena);
                 *c = makeObjectToAST(vm, arena,
-                                     reserve(vm, at(get(vm, tree), 1)));
+                                     reserve(vm, at(get(vm, tree), 1)),
+                                     file);
                 ret = c;
                 free(vm, tree);
+                if (*lrs != LRS_OK) {
+                    return 0;
+                }
             } else {
                 if (get(vm, tree).pair &&
                     get(vm, tree).pair->car.type == V_SYMBOL &&
                     keyExists(&vm->macros, get(vm, tree).pair->car)) {
 
-                    ret = exprToAST(vm, arena, expandMacro(vm, tree));
+                    Handle newTree = expandMacro(vm, tree, lrs);
+                    if (*lrs != LRS_OK) {
+                        return 0;
+                    }
+                    ret = exprToAST(vm, arena, newTree,
+                                    file, lrs);
+                    if (*lrs != LRS_OK) {
+                        return 0;
+                    }
                 } else {
                     ASTCall *c = alloc<ASTCall>(arena);
-                    *c = callToAST(vm, arena, tree);
+                    *c = callToAST(vm, arena, tree, file, lrs);
+                    if (*lrs != LRS_OK) {
+                        return 0;
+                    }
                     ret = c;
                 }
             }
         } break;
         default: {
-            // FIXME
-            fprintf(stderr, "ERROR: %d cant be converted to ast yet\n", type(vm, tree));
-            assert(false);
+            lassertStr(vm, lrs,
+                       false, 0, "%d cant be converted to ast yet\n", type(vm, tree));
         } break;
     }
+    assert(ret);
+    *lrs = LRS_OK;
     return ret;
 }
 
-ASTBody bodyToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
+ASTBody bodyToAST(VM *vm, ArenaAllocator *arena, Handle tree,
+                  const char *file) {
     assert(type(vm, tree) == V_CONS_PAIR);
     ASTBody ret;
-    setDebugInfo(vm, get(vm, tree), ret);
+    if (get(vm, tree).pair) {
+        setDebugInfo(vm, get(vm, tree), ret);
+    } else {
+        ret.line = 1234;
+        ret.column = 1234;
+    }
     while (get(vm, tree).pair) {
         assert(type(vm, tree) == V_CONS_PAIR);
         Handle tmp = reserve(vm, get(vm, tree).pair->car);
-        add(&ret.body, exprToAST(vm, arena, tmp));
+        LispisReturnStatus lrs = LRS_OK;
+        add(&ret.body, exprToAST(vm, arena, tmp, file, &lrs));
+        if (lrs != LRS_OK) {
+            printValue(vm, pop(vm), stderr);
+            assert(false);
+        }
         tmp = reserve(vm, get(vm, tree).pair->cdr);
         free(vm, tree);
         tree = tmp;
@@ -737,10 +926,10 @@ ASTBody bodyToAST(VM *vm, ArenaAllocator *arena, Handle tree) {
 void printReserved(VM *vm) {
     for (size_t i = 0; i < size(&vm->handles); ++i) {
         if (vm->handles[i].type != V_UNDEF) {
-            printf("%lu ", i);
+            l_fprintf(stdout, "%lu ", i);
         }
     }
-    printf("\n");
+    l_fprintf(stdout, "\n");
 }
 
 void patchGoStatements(VM *vm, Scope scope) {
@@ -755,7 +944,7 @@ void patchGoStatements(VM *vm, Scope scope) {
 }
 
 // WARNING!!! adds stuff to the current scope!!
-#define allocScope(s, par, line)                        \
+#define allocScope(s, par, line, f, ns)                 \
     Object _newSymToReg;                                \
     DynamicArray<size_t> _newFreeRegisters;             \
     Object _newLabelPositions;                          \
@@ -764,6 +953,8 @@ void patchGoStatements(VM *vm, Scope scope) {
     s.protoID = size(&vm->funcProtos);                  \
     add(&vm->funcProtos, FunctionPrototype());          \
     vm->funcProtos[s.protoID].definedOnLine = line;     \
+    vm->funcProtos[s.protoID].file = f;                 \
+    vm->funcProtos[s.protoID].nameSymbol = ns;          \
     s.parent = par;                                     \
     s.symToReg = &_newSymToReg;                         \
     s.freeRegisters = &_newFreeRegisters;               \
@@ -771,18 +962,18 @@ void patchGoStatements(VM *vm, Scope scope) {
     s.goLabelPositions = &_newGoLabelPositions;         \
     s.valueToConstantSlot = &_newValueToConstantSlot
 
-Value compileString(VM *vm, char *prog, bool verbose,
-                        const char *filePath) {
-    LexState lex = initLexerState(vm, prog);
-    Scope topScope;
-    allocScope(topScope, 0, 0); 
-    if (filePath) {
-        vm->funcProtos[topScope.protoID].nameSymbol =
-            intern(vm, filePath);
-    } else {
-        vm->funcProtos[topScope.protoID].nameSymbol =
-            intern(vm, "anonymous");
+LispisReturnStatus compileString(VM *vm, char *prog, bool verbose,
+                                 const char *filePath) {
+    LexState lex;
+    LispisReturnStatus lrs = initLexerState(vm, prog, &lex);
+    if (lrs != LRS_OK) {
+        return lrs;
     }
+    Scope topScope;
+    if (!filePath) {
+        filePath = "from C++";
+    }
+    allocScope(topScope, 0, 0, strdup(filePath), intern(vm, filePath)); 
     ASTNode *node = 0;
     ArenaAllocator arena;
     {
@@ -792,17 +983,29 @@ Value compileString(VM *vm, char *prog, bool verbose,
         Handle currTree = handle;
         while (peekToken(&lex).type != T_EOF) {
             freeArena(&arena);
-            parseExpr(vm, &lex, currTree);
+            LispisReturnStatus lrs =
+                parseExpr(vm, &lex, currTree);
+            if (lrs != LRS_OK) {
+                freeArena(&arena);
+                free(vm, currTree);
+                return lrs;
+            }
             if (verbose) {
-                printf("\n");
+                l_fprintf(stdout, "\n");
                 printValue(vm, get(vm, currTree).pair->car);
-                printf("\n\n");
+                l_fprintf(stdout, "\n\n");
             }
 
             assertLineInfo(vm, get(vm, currTree).pair->car);
             
             node = exprToAST(vm, &arena,
-                             reserve(vm, get(vm, currTree).pair->car));
+                             reserve(vm, get(vm, currTree).pair->car),
+                             filePath, &lrs);
+            if (lrs != LRS_OK) {
+                freeArena(&arena);
+                free(vm, currTree);
+                return lrs;
+            }
             if (verbose) {
                 node->traverse(vm);
             }
@@ -819,10 +1022,7 @@ Value compileString(VM *vm, char *prog, bool verbose,
             }
         }
     }
-    if (!node) {
-        fprintf(stderr, "ERROR: Empty 'file' is not allowed\n");
-        assert(false);
-    }
+    lassertStr(vm, &lrs, node, 0, "ERROR: Empty 'file' is not allowed\n");
     size_t returnLine = 0;
     if (size(&vm->funcProtos[topScope.protoID].lines)) {
         returnLine = last(&vm->funcProtos[topScope.protoID].lines);
@@ -840,10 +1040,11 @@ Value compileString(VM *vm, char *prog, bool verbose,
     freeArena(&arena);
     Value ret = {V_FUNCTION};
     ret.func = allocFunction(vm, topScope.protoID);
-    return ret;
+    pushValue(vm, ret);
+    return LRS_OK;
 }
 
-Value compileFile(VM *vm, const char *path, bool verbose) {
+LispisReturnStatus compileFile(VM *vm, const char *path, bool verbose) {
     FILE *file = fopen(path, "r");
     long int length;
     fseek(file, 0, SEEK_END);
@@ -911,18 +1112,20 @@ ASTNode::ASTNode(ASTNodeType t, bool b) : type(t), hasReg(b) {}
 ASTBody::ASTBody() : ASTNode(ASTT_BODY, false) {}
 
 void ASTBody::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
     for (size_t i = 0; i < size(&body); ++i) {
         body[i]->traverse(vm);
     }
 }
 
 void ASTBody::emit(VM *vm, Scope scope) {
-    for (size_t i = 0; i < size(&body); ++i) {
-        body[i]->emit(vm, scope);
-        body[i]->freeRegister(scope);
+    if (size(&body)) {
+        for (size_t i = 0; i < size(&body); ++i) {
+            body[i]->emit(vm, scope);
+            body[i]->freeRegister(scope);
+        }
+        hasReg = body[size(&body)-1]->hasReg;
     }
-    hasReg = body[size(&body)-1]->hasReg;
     //if (body[size(&body)-1]->hasReg) {
     //Value retReg =
     //body[size(&body)-1]->getRegister(vm, scope,
@@ -935,15 +1138,16 @@ void ASTBody::emit(VM *vm, Scope scope) {
 };
 
 Value ASTBody::getRegister(VM *vm, Scope scope) {
+    assert(hasReg);
     return body[size(&body)-1]->getRegister(vm, scope);
 }
 
 void ASTBody::freeRegister(Scope scope) {}
 ASTSymbol::ASTSymbol() : ASTNode(ASTT_SYMBOL, true) {}
 void ASTSymbol::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
     printValue(vm, sym);
-    printf(" %d\n", sym.sym.id);
+    l_fprintf(stdout, " %d\n", sym.sym.id);
 }
 void ASTSymbol::emit(VM *vm, Scope scope) {
     Value k;
@@ -969,10 +1173,10 @@ void ASTSymbol::freeRegister(Scope scope) {
 ASTVariable::ASTVariable() : ASTNode(ASTT_VARIABLE, true),
                              symbol(Value{V_SYMBOL}) {}
 void ASTVariable::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
     //Value symStr = getFirstKey(&vm->symbolTable, symbol);
     printValue(vm, symbol);
-    printf(" %d\n", symbol.sym.id);
+    l_fprintf(stdout, " %d\n", symbol.sym.id);
 };
 
 void ASTVariable::emit(VM *vm, Scope scope) {
@@ -1024,24 +1228,24 @@ void ASTVariable::freeRegister(Scope scope) {
 
 ASTArgList::ASTArgList() : ASTNode(ASTT_ARGLIST, true) {}
 void ASTArgList::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("ArgList ");
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "ArgList ");
     if (vararg) {
         if (size(&args) > 1) {
             for (size_t i = 0; i < size(&args) - 1; ++i) {
                 args[i].traverse(vm);
             }
-            printf(".\n");
+            l_fprintf(stdout, ".\n");
             last(&args).traverse(vm);
         } else {
             args[0].traverse(vm);
         }
     } else {
-        printf("(\n");
+        l_fprintf(stdout, "(\n");
         for (size_t i = 0; i < size(&args); ++i) {
             args[i].traverse(vm);
         }
-        printf(")\n");
+        l_fprintf(stdout, ")\n");
     }
 };
 
@@ -1054,22 +1258,22 @@ void ASTArgList::emit(VM *vm, Scope scope) {
 }
 
 Value ASTArgList::getRegister(VM *vm, Scope scope) {
-    fprintf(stderr, "ICE: argument list does not have a register\n");
+    l_fprintf(stderr, "ICE: argument list does not have a register\n");
     assert(false);
 }
 
 void ASTArgList::freeRegister(Scope scope) {
-    fprintf(stderr, "ICE: argument list does not have a register\n");
+    l_fprintf(stderr, "ICE: argument list does not have a register\n");
     assert(false);
 }
 
 ASTLambda::ASTLambda() : ASTNode(ASTT_LAMBDA, true) {}
 void ASTLambda::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("Lambda (\n");
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "Lambda (\n");
     argList.traverse(vm);
     body.traverse(vm);
-    printf(")\n");
+    l_fprintf(stdout, ")\n");
 };
 
 void ASTLambda::emit(VM *vm, Scope scope) {
@@ -1077,8 +1281,7 @@ void ASTLambda::emit(VM *vm, Scope scope) {
     // constant table(?), load the constant.
     
     Scope newScope;
-    allocScope(newScope, &scope, line);
-    vm->funcProtos[newScope.protoID].nameSymbol = nameSymbol;
+    allocScope(newScope, &scope, line, file, nameSymbol);
     size_t localProtoID =
         size(&vm->funcProtos[scope.protoID].subFuncProtoIDs);
     add(&vm->funcProtos[scope.protoID].subFuncProtoIDs,
@@ -1112,13 +1315,13 @@ void ASTLambda::freeRegister(Scope scope) {
 
 ASTCall::ASTCall() : ASTNode(ASTT_CALL, true) {}
 void ASTCall::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("Call (\n");
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "Call (\n");
     callee->traverse(vm);
     for (size_t i = 0; i < size(&args); ++i) {
         args[i]->traverse(vm);
     }
-    printf(")\n");
+    l_fprintf(stdout, ")\n");
 }
 
 void ASTCall::emit(VM *vm, Scope scope) {
@@ -1151,8 +1354,8 @@ void ASTCall::freeRegister(Scope scope) {
 
 ASTDouble::ASTDouble() : ASTNode(ASTT_DOUBLE, true) {}
 void ASTDouble::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("%f\n", value);
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "%f\n", value);
 }
 
 void ASTDouble::emit(VM *vm, Scope scope) {
@@ -1181,8 +1384,8 @@ void ASTDouble::freeRegister(Scope scope) {
 ASTBoolean::ASTBoolean() : ASTNode(ASTT_BOOLEAN, true) {}
 
 void ASTBoolean::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("%s\n", value ? "true" : "false");
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "%s\n", value ? "true" : "false");
 }
 
 void ASTBoolean::emit(VM *vm, Scope scope) {
@@ -1211,8 +1414,8 @@ void ASTBoolean::freeRegister(Scope scope) {
 ASTString::ASTString() : ASTNode(ASTT_STRING, true) {}
 
 void ASTString::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("%s\n", value.str);
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "%s\n", value.str);
 }
 
 void ASTString::emit(VM *vm, Scope scope) {
@@ -1239,15 +1442,15 @@ void ASTString::freeRegister(Scope scope) {
 ASTMakeObject::ASTMakeObject() : ASTNode(ASTT_MAKE_OBJECT, true) {}
 
 void ASTMakeObject::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("(make-object\n(\n");
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "(make-object\n(\n");
     for (size_t i = 0; i < size(&slots); ++i) {
-        printf("(\n");
+        l_fprintf(stdout, "(\n");
         slots[i].key->traverse(vm);
         slots[i].value->traverse(vm);
-        printf(")\n");
+        l_fprintf(stdout, ")\n");
     }
-    printf(")\n)\n");
+    l_fprintf(stdout, ")\n)\n");
 }
 
 void ASTMakeObject::emit(VM *vm, Scope scope) {
@@ -1281,12 +1484,12 @@ void ASTMakeObject::freeRegister(Scope scope) {
 ASTDefine::ASTDefine() : ASTNode(ASTT_DEFINE, false), var(Value{V_SYMBOL}) {}
 
 void ASTDefine::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("(define\n");
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "(define\n");
     printValue(vm, var);
-    printf("\n");
+    l_fprintf(stdout, "\n");
     expr->traverse(vm);
-    printf(")\n");
+    l_fprintf(stdout, ")\n");
 }
 
 void ASTDefine::emit(VM *vm, Scope scope) {
@@ -1305,7 +1508,7 @@ void ASTDefine::emit(VM *vm, Scope scope) {
 }
 
 Value ASTDefine::getRegister(VM *vm, Scope scope) {
-    fprintf(stderr, "ERROR at %lu:%lu: define can't be used as an "
+    l_fprintf(stderr, "ERROR at %lu:%lu: define can't be used as an "
             "expression\n", line, column);
     assert(false);
 }
@@ -1316,14 +1519,14 @@ void ASTDefine::freeRegister(Scope scope) {
 ASTIf::ASTIf() : ASTNode(ASTT_IF, true) {}
 
 void ASTIf::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("If (\n");
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "If (\n");
     pred->traverse(vm);
     trueBranch->traverse(vm);
     if (falseBranch) {
         falseBranch->traverse(vm);
     }
-    printf(")\n");
+    l_fprintf(stdout, ")\n");
 }
 
 void ASTIf::emit(VM *vm, Scope scope) {
@@ -1380,12 +1583,12 @@ void ASTIf::freeRegister(Scope scope) {
 ASTLet::ASTLet() : ASTNode(ASTT_LET, false) {}
 
 void ASTLet::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("(let\n");
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "(let\n");
     var.traverse(vm);
-    printf("\n");
+    l_fprintf(stdout, "\n");
     expr->traverse(vm);
-    printf(")\n");
+    l_fprintf(stdout, ")\n");
 }
 
 void ASTLet::emit(VM *vm, Scope scope) {
@@ -1398,7 +1601,7 @@ void ASTLet::emit(VM *vm, Scope scope) {
 }
 
 Value ASTLet::getRegister(VM *vm, Scope scope) {
-    fprintf(stderr, "ERROR at %lu:%lu: let can't be used as an "
+    l_fprintf(stderr, "ERROR at %lu:%lu: let can't be used as an "
             "expression\n", line, column);
     assert(false);
 }
@@ -1409,12 +1612,12 @@ void ASTLet::freeRegister(Scope scope) {
 ASTSet::ASTSet() : ASTNode(ASTT_SET, true) {}
 
 void ASTSet::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("(set!\n");
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "(set!\n");
     var.traverse(vm);
     printf("\n");
     expr->traverse(vm);
-    printf(")\n");
+    l_fprintf(stdout, ")\n");
 }
 
 void ASTSet::emit(VM *vm, Scope scope) {
@@ -1463,20 +1666,20 @@ void ASTSet::freeRegister(Scope scope) {
 ASTList::ASTList() : ASTNode(ASTT_LIST, true) {}
 
 void ASTList::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("(list\n");
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "(list\n");
     if (dotted) {
         for (size_t i = 0; i < size(&elems) - 1; ++i) {
             elems[i]->traverse(vm);
         }
-        printf(".\n");
+        l_fprintf(stdout, ".\n");
         last(&elems)->traverse(vm);
     } else {
         for (size_t i = 0; i < size(&elems); ++i) {
             elems[i]->traverse(vm);
         }
     }
-    printf(")");
+    l_fprintf(stdout, ")");
 }
 
 void ASTList::emit(VM *vm, Scope scope) {
@@ -1531,13 +1734,13 @@ void ASTList::freeRegister(Scope scope) {
 
 ASTDefmacro::ASTDefmacro() : ASTNode(ASTT_DEFMACRO, false) {}
 void ASTDefmacro::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("Defmacro ");
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "Defmacro ");
     printValue(vm, variable);
-    printf("(\n");
+    l_fprintf(stdout, "(\n");
     argList.traverse(vm);
     body.traverse(vm);
-    printf(")\n");
+    l_fprintf(stdout, ")\n");
 };
 
 void ASTDefmacro::emit(VM *vm, Scope scope) {
@@ -1545,7 +1748,7 @@ void ASTDefmacro::emit(VM *vm, Scope scope) {
     // constant table(?), load the constant.
     
     Scope newScope;
-    allocScope(newScope, &scope, line);
+    allocScope(newScope, &scope, line, file, variable.sym);
     size_t localProtoID =
         size(&vm->funcProtos[scope.protoID].subFuncProtoIDs);
     add(&vm->funcProtos[scope.protoID].subFuncProtoIDs,
@@ -1558,8 +1761,8 @@ void ASTDefmacro::emit(VM *vm, Scope scope) {
         addR(&vm->funcProtos[newScope.protoID],
              OP_RETURN, line, retReg.regOrConstant);
     } else {
-        fprintf(stderr, "ERROR at %lu:%lu: macro has to "
-                "return a value\n", body.line, body.column);
+        l_fprintf(stderr, "ERROR at %lu:%lu: macro has to "
+                  "return a value\n", body.line, body.column);
         assert(false);
         //addN(&vm->funcProtos[newScope.protoID], OP_RETURN_UNDEF);
     }
@@ -1570,8 +1773,8 @@ void ASTDefmacro::emit(VM *vm, Scope scope) {
 }
 
 Value ASTDefmacro::getRegister(VM *vm, Scope scope) {
-    fprintf(stderr, "ERROR %lu:%lu: defmacro can't be "
-            "used as an expression\n", line, column);
+    l_fprintf(stderr, "ERROR %lu:%lu: defmacro can't be "
+              "used as an expression\n", line, column);
     assert(false);
 }
 
@@ -1580,10 +1783,10 @@ void ASTDefmacro::freeRegister(Scope scope) {
 
 ASTLabel::ASTLabel() : ASTNode(ASTT_LABEL, false) {}
 void ASTLabel::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("(Label\n");
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "(Label\n");
     printValue(vm, labelSymbol);
-    printf("\n)\n");
+    l_fprintf(stdout, "\n)\n");
 };
 
 void ASTLabel::emit(VM *vm, Scope scope) {
@@ -1595,8 +1798,8 @@ void ASTLabel::emit(VM *vm, Scope scope) {
 }
 
 Value ASTLabel::getRegister(VM *vm, Scope scope) {
-    fprintf(stderr, "ERROR at %lu:%lu: label can't be used as "
-            "an expression\n", line, column);
+    l_fprintf(stderr, "ERROR at %lu:%lu: label can't be used as "
+              "an expression\n", line, column);
     assert(false);
 }
 
@@ -1605,10 +1808,10 @@ void ASTLabel::freeRegister(Scope scope) {
 
 ASTGo::ASTGo() : ASTNode(ASTT_GO, false) {}
 void ASTGo::traverse(VM *vm) {
-    printf("%lu:%lu\n", line, column);
-    printf("(Go\n");
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "(Go\n");
     printValue(vm, labelSymbol);
-    printf("\n)\n");
+    l_fprintf(stdout, "\n)\n");
 };
 
 void ASTGo::emit(VM *vm, Scope scope) {
@@ -1622,10 +1825,33 @@ void ASTGo::emit(VM *vm, Scope scope) {
 }
 
 Value ASTGo::getRegister(VM *vm, Scope scope) {
-    fprintf(stderr, "ERROR at %lu:%lu: go can't be used as "
-            "an expression\n", line, column);
+    l_fprintf(stderr, "ERROR at %lu:%lu: go can't be used as "
+              "an expression\n", line, column);
     assert(false);
 }
 
 void ASTGo::freeRegister(Scope scope) {
+}
+
+ASTCrash::ASTCrash() : ASTNode(ASTT_CRASH, false) {}
+void ASTCrash::traverse(VM *vm) {
+    l_fprintf(stdout, "%lu:%lu\n", line, column);
+    l_fprintf(stdout, "(Crash\n");
+    crashvalue->traverse(vm);
+    l_fprintf(stdout, "\n)\n");
+};
+
+void ASTCrash::emit(VM *vm, Scope scope) {
+    crashvalue->emit(vm, scope);
+    addR(&vm->funcProtos[scope.protoID], OP_CRASH, line,
+         crashvalue->getRegister(vm, scope).regOrConstant);
+}
+
+Value ASTCrash::getRegister(VM *vm, Scope scope) {
+    l_fprintf(stderr, "ERROR at %lu:%lu: crash can't be used as "
+              "an expression\n", line, column);
+    assert(false);
+}
+
+void ASTCrash::freeRegister(Scope scope) {
 }

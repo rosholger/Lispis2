@@ -48,7 +48,6 @@ void eatWhiteSpace(LexState *state);
 bool isFloatStartChar(int c);
 Token peekToken(LexState *state);
 Token nextToken(VM *vm, LexState *state);
-LexState initLexerState(VM *vm, char *prog);
+LispisReturnStatus initLexerState(VM *vm, char *prog, LexState *ret);
 
-void parseList(VM *vm, LexState *lex, Handle parent);
-void parseExpr(VM *vm, LexState *lex, Handle parent);
+LispisReturnStatus parseExpr(VM *vm, LexState *lex, Handle parent);

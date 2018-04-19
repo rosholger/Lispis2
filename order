@@ -1,0 +1,31 @@
+#!/usr/bin/env python 
+import argparse, os, glob
+parser = argparse.ArgumentParser()
+parser.add_argument("change", help="The integer to add to files order",
+                    type=int)
+parser.add_argument("start", help="The starting index", type=int)
+parser.add_argument("-d", "-direction", dest = "direction",
+                    help="up or down", default="up",
+                    choices=set(("up","down")))
+
+args = parser.parse_args()
+
+# Ugly, expects that if we find no files starting with n- we wont find any
+# starting with j- where j>n
+
+os.chdir("./stdlib/")
+currPrefix = args.start
+files = []
+currFiles = glob.glob(str(currPrefix) + "-*.lsp")
+while len(currFiles) > 0:
+    if args.direction == "up":
+        currPrefix += 1
+    else:
+        currPrefix -= 1
+    files.append((currPrefix, currFiles))
+    currFiles = glob.glob(str(currPrefix) + "-*.lsp")
+
+for newPrefix, fs in files:
+    for f in fs:
+        # Hack
+        os.rename(f, str(newPrefix) + "-" + "-".join(f.split("-")[1:]))

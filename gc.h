@@ -6,7 +6,8 @@
 
 // Damn I generate a lot of garbage while compiling.
 // Over 64kb is needed to compile the "standard library"
-#define HEAP_START_SIZE kilobytes(128)
+// YAY! Splitting the stdlib into smaller parts mean 64k is enough
+#define HEAP_START_SIZE kilobytes(64)
 #define HEAP_START_MAX_SIZE megabytes(1)
 
 struct GC {

@@ -1,9 +1,3 @@
-// WARNING!!!!!!!!!!!!!!!!
-// WARNING!!!!!!!!!!!!!!!!
-// WARNING!!!!!!!!!!!!!!!!
-// WARNING!!!!!!!!!!!!!!!!
-// WARNING!!!!!!!!!!!!!!!!
-// Order of these have to match the opCodeTypes array
 OPCODE(LOADK, RI)
 // two arguments, The register to load into,
 // the constant id.
@@ -88,3 +82,6 @@ OPCODE(CONS, RRR)
 
 OPCODE(LOAD_NULL, R)
 // one register, dst
+
+OPCODE(CRASH, R)
+// The crashvalue to "return"

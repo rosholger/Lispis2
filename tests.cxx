@@ -164,13 +164,9 @@ public:
     }
 
     void testVararg() {
-        VM vm = initVM(true);
+        VM vm = initVM(false);
         doString(&vm,
                  "((lambda args ((lambda (arg) arg) args)) 1)", 0, false);
         ETS_ASSERT(isList(&vm));
-        for (size_t i = 0; i < size(&vm.funcProtos); ++i) {
-            printf("\nFunction %lu:\n", i);
-            printFuncProtoCode(&vm, &vm.funcProtos[i]);
-        }
     }
 };

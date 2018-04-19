@@ -1,0 +1,11 @@
+(define list-iterator (lst)
+  {(curr lst) (alive (not (null? lst)))
+   (update (lambda (this)
+             (let ret '())
+             (if (get-slot this 'alive)
+                 (scope
+                  (set! ret (car (get-slot this 'curr)))
+                  (set-slot! this 'curr (cdr (get-slot this 'curr)))
+                  (if (null? (get-slot this 'curr))
+                      (set-slot! this 'alive false))))
+             ret))})

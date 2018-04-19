@@ -39,6 +39,7 @@ enum ASTNodeType {
     ASTT_FOR,
     ASTT_LABEL,
     ASTT_GO,
+    ASTT_CRASH,
 };
 
 struct ArenaAllocator {
@@ -65,6 +66,7 @@ struct ASTNode {
 struct ASTBody : ASTNode {
     ASTBody();
     DynamicArray<ASTNode *> body;
+    Value reg;
     virtual void traverse(VM *vm);
     virtual void emit(VM *vm, Scope scope);
     virtual Value getRegister(VM *vm, Scope scope);
@@ -121,6 +123,7 @@ struct ASTLambda : ASTNode {
     ASTBody body;
     Value reg;
     Symbol nameSymbol;
+    char *file = 0;
     virtual void traverse(VM *vm);
     virtual void emit(VM *vm, Scope scope);
     virtual Value getRegister(VM *vm, Scope scope);
@@ -132,6 +135,7 @@ struct ASTDefmacro : ASTNode {
     Value variable;
     ASTArgList argList;
     ASTBody body;
+    char *file = 0;
     virtual void traverse(VM *vm);
     virtual void emit(VM *vm, Scope scope);
     virtual Value getRegister(VM *vm, Scope scope);
@@ -216,6 +220,15 @@ struct ASTIf : ASTNode {
     virtual void freeRegister(Scope scope);
 };
 
+struct ASTCrash : ASTNode {
+    ASTNode *crashvalue;
+    ASTCrash();
+    virtual void traverse(VM *vm);
+    virtual void emit(VM *vm, Scope scope);
+    virtual Value getRegister(VM *vm, Scope scope);
+    virtual void freeRegister(Scope scope);
+};
+
 struct ASTLet : ASTNode {
     ASTVariable var;
     ASTNode *expr;
@@ -289,6 +302,8 @@ T *alloc(ArenaAllocator *arena) {
     return ret;
 }
 void freeArena(ArenaAllocator *arena);
-Value compileString(VM *vm, char *prog, bool verbose = false,
-                    const char *filePath = 0);
-Value compileFile(VM *vm, const char *path, bool verbose = false);
+LispisReturnStatus compileString(VM *vm, char *prog,
+                                 bool verbose = false,
+                                 const char *filePath = 0);
+LispisReturnStatus compileFile(VM *vm, const char *path,
+                               bool verbose = false);

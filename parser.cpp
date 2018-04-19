@@ -4,6 +4,26 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include "common.h"
+
+#define errorStr(vm, str)                       \
+    do {                                        \
+        pushString(vm, str);                    \
+        return LRS_COMPILETIME_ERROR;           \
+    } while(false)
+
+#define STRINGIFY(X) #X
+#define TOSTRING(X) STRINGIFY(X)
+#define lassertStr(vm, b, str)                                          \
+    do {                                                                \
+        if (!(b)) {                                                     \
+            errorStr(vm, __FILE__ ":" TOSTRING(__LINE__)                \
+                     ": Assertion `" #b                                 \
+                     "' failed.\n"                                      \
+                     str);                                              \
+        }                                                               \
+    } while(false)
+
 
 void eatWhiteSpace(LexState *state) {
     while ((isspace(state->prog[state->pos]) ||
@@ -185,15 +205,13 @@ Token nextToken(VM *vm, LexState *state) {
     return ret;
 }
 
-LexState initLexerState(VM *vm, char *prog) {
-    LexState ret{};
-    ret.prog = prog;
-    nextToken(vm, &ret);
-    if (peekToken(&ret).type == T_EOF) {
-        fprintf(stderr, "ERROR?: Empty 'files' are not legal\n");
-        assert(false);
-    }
-    return ret;
+LispisReturnStatus initLexerState(VM *vm, char *prog, LexState *ret) {
+    *ret = LexState{};
+    ret->prog = prog;
+    nextToken(vm, ret);
+    lassertStr(vm, peekToken(ret).type != T_EOF,
+               "ERROR?: Empty 'files' are not legal");
+    return LRS_OK;
 }
 
 #define allocPair(vm, parent)                                           \
@@ -204,7 +222,8 @@ LexState initLexerState(VM *vm, char *prog) {
         get(vm, parent).pair->car.pair = 0;                             \
     } while(false)
 
-void parseObjectLiteralElems(VM *vm, LexState *lex, Handle parent) {
+LispisReturnStatus parseObjectLiteralElems(VM *vm, LexState *lex,
+                                           Handle parent) {
     Value p = allocConsPair(vm);
     get(vm, parent).pair->car.type = V_CONS_PAIR;
     get(vm, parent).pair->cdr.type = V_CONS_PAIR;
@@ -217,7 +236,8 @@ void parseObjectLiteralElems(VM *vm, LexState *lex, Handle parent) {
         get(vm, lst).pair->cdr.type = V_CONS_PAIR;
         get(vm, lst).pair->car = p;
         Token tok = nextToken(vm, lex);
-        assert(tok.type == T_LEFT_PAREN);
+        lassertStr(vm, tok.type == T_LEFT_PAREN,
+                   "Slot pair not a list");
         Handle pair = reserve(vm, get(vm, lst).pair->car);
         setLineInfo(vm, pair, tok.line, tok.column);
         { // key
@@ -237,8 +257,13 @@ void parseObjectLiteralElems(VM *vm, LexState *lex, Handle parent) {
                         peekToken(lex).line, peekToken(lex).column);
             Handle rst = reserve(vm,
                                  get(vm, pair).pair->car.pair->cdr);
-            parseExpr(vm, lex, rst);
+            LispisReturnStatus lrs = parseExpr(vm, lex, rst);
             free(vm, rst);
+            if (lrs != LRS_OK) {
+                free(vm, lst);
+                free(vm, pair);
+                return lrs;
+            }
         }
         p = allocConsPair(vm);
         get(vm, pair).pair->cdr.type = V_CONS_PAIR;
@@ -246,9 +271,16 @@ void parseObjectLiteralElems(VM *vm, LexState *lex, Handle parent) {
         setLineInfo(vm, get(vm, pair).pair->cdr,
                     peekToken(lex).line, peekToken(lex).column);
         Handle value = reserve(vm, get(vm, pair).pair->cdr);
-        parseExpr(vm, lex, value); // value
+        LispisReturnStatus lrs =
+            parseExpr(vm, lex, value); // value
         free(vm, value);
-        assert(nextToken(vm, lex).type == T_RIGHT_PAREN);
+        if (lrs != LRS_OK) {
+            free(vm, lst);
+            free(vm, pair);
+            return lrs;
+        }
+        lassertStr(vm, nextToken(vm, lex).type == T_RIGHT_PAREN,
+                   "Missing right paren in object literal slot pair");
         free(vm, pair);
         if (peekToken(lex).type != T_RIGHT_CURLY) {
             Value p = allocConsPair(vm);
@@ -261,16 +293,19 @@ void parseObjectLiteralElems(VM *vm, LexState *lex, Handle parent) {
     }
     free(vm, lst);
     nextToken(vm, lex); // }
+    return LRS_OK;
 }
 
-void parseExpr(VM *vm, LexState *lex, Handle parent) {
+LispisReturnStatus parseList(VM *vm, LexState *lex, Handle parent);
+
+LispisReturnStatus parseExpr(VM *vm, LexState *lex, Handle parent) {
     //assert(getC(vm, parent).type == V_CONS_PAIR);
     //assert(getC(vm, parent).pair == 0);
     Token tok = nextToken(vm, lex);
     switch (tok.type) {
         case T_ERROR: {
-            fprintf(stderr, "ERROR at %lu:%lu: '%.*s'\n",
-                    tok.line, tok.column, (int)tok.length, tok.str);
+            l_fprintf(stderr, "ICE at %lu:%lu: Unknown token '%.*s'\n",
+                      tok.line, tok.column, (int)tok.length, tok.str);
             assert(false);
         } break;
         case T_DOUBLE: {
@@ -307,10 +342,14 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
                         peekToken(lex).line, peekToken(lex).column);
             Handle rst = reserve(vm,
                                  get(vm, parent).pair->car.pair->cdr);
-            parseObjectLiteralElems(vm, lex, rst);
+            LispisReturnStatus lrs =
+                parseObjectLiteralElems(vm, lex, rst);
             setLineInfo(vm, get(vm, parent).pair->car,
                         tok.line, tok.column);
             free(vm, rst);
+            if (lrs != LRS_OK) {
+                return lrs;
+            }
         } break;
         case T_LEFT_PAREN: {
             allocPair(vm, parent);
@@ -321,10 +360,15 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
                 setLineInfo(vm, get(vm, parent).pair->car,
                             tok.line, tok.column);
                 Handle car = reserve(vm, get(vm, parent).pair->car);
-                parseList(vm, lex, car);
+                LispisReturnStatus lrs = parseList(vm, lex, car);
                 free(vm, car);
+                if (lrs != LRS_OK) {
+                    return lrs;
+                }
             }
-            assert(nextToken(vm, lex).type == T_RIGHT_PAREN); // eat right parent
+            // eat right parent
+            lassertStr(vm, nextToken(vm, lex).type == T_RIGHT_PAREN,
+                       "Missing right paren in expression");
         } break;
         case T_QUOTE: {
             allocPair(vm, parent);
@@ -340,10 +384,13 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
                         peekToken(lex).line, peekToken(lex).column);
             Handle rst = reserve(vm,
                                  get(vm, parent).pair->car.pair->cdr);
-            parseExpr(vm, lex, rst);
+            LispisReturnStatus lrs = parseExpr(vm, lex, rst);
             setLineInfo(vm, get(vm, parent).pair->car,
                         tok.line, tok.column);
             free(vm, rst);
+            if (lrs != LRS_OK) {
+                return lrs;
+            }
         } break;
         case T_QUASIQUOTE: {
             allocPair(vm, parent);
@@ -359,10 +406,13 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
                         peekToken(lex).line, peekToken(lex).column);
             Handle rst = reserve(vm,
                                  get(vm, parent).pair->car.pair->cdr);
-            parseExpr(vm, lex, rst);
+            LispisReturnStatus lrs = parseExpr(vm, lex, rst);
             setLineInfo(vm, get(vm, parent).pair->car,
                         tok.line, tok.column);
             free(vm, rst);
+            if (lrs != LRS_OK) {
+                return lrs;
+            }
         } break;
         case T_UNQUOTE: {
             allocPair(vm, parent);
@@ -378,10 +428,13 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
                         peekToken(lex).line, peekToken(lex).column);
             Handle rst = reserve(vm,
                                  get(vm, parent).pair->car.pair->cdr);
-            parseExpr(vm, lex, rst);
+            LispisReturnStatus lrs = parseExpr(vm, lex, rst);
             setLineInfo(vm, get(vm, parent).pair->car,
                         tok.line, tok.column);
             free(vm, rst);
+            if (lrs != LRS_OK) {
+                return lrs;
+            }
         } break;
         case T_UNQUOTE_SPLICING: {
             allocPair(vm, parent);
@@ -397,45 +450,58 @@ void parseExpr(VM *vm, LexState *lex, Handle parent) {
                         peekToken(lex).line, peekToken(lex).column);
             Handle rst = reserve(vm,
                                  get(vm, parent).pair->car.pair->cdr);
-            parseExpr(vm, lex, rst);
+            LispisReturnStatus lrs = parseExpr(vm, lex, rst);
             setLineInfo(vm, get(vm, parent).pair->car,
                         tok.line, tok.column);
             free(vm, rst);
+            if (lrs != LRS_OK) {
+                return lrs;
+            }
         } break;
+            // FIXME: We need formatted error messages
         case T_RIGHT_PAREN: {
-            fprintf(stderr, "ERROR at %lu:%lu: Mismatching parenthesis, "
-                    ") not matching any (\n",
-                    tok.line, tok.column);
-            assert(false);
+            pushStringV(vm, "ERROR at %lu:%lu: Mismatching parenthesis, "
+                        ") not matching any (\n",
+                        tok.line, tok.column);
+            return LRS_COMPILETIME_ERROR;
         } break;
         case T_EOF: {
-            fprintf(stderr, "ERROR: Mismatching parenthesis, more ( than )\n");
-            assert(false);
+            lassertStr(vm, false,
+                       "Mismatching parenthesis, more ( than )");
         } break;
         default: {
-            fprintf(stderr, "ERROR at %lu:%lu: %d not recognized yet\n",
-                    tok.line, tok.column, tok.type);
-            assert(false);
+            pushStringV(vm, "ERROR at %lu:%lu: %d not recognized yet\n",
+                        tok.line, tok.column, tok.type);
+            return LRS_COMPILETIME_ERROR;
         } break;
     }
+    return LRS_OK;
 }
 
-void parseList(VM *vm, LexState *lex, Handle parent) {
+LispisReturnStatus parseList(VM *vm, LexState *lex, Handle parent) {
 
     Token tok = peekToken(lex);
     Handle currParent = reserve(vm, get(vm, parent));
     while (tok.type != T_RIGHT_PAREN) {
         setLineInfo(vm, currParent, tok.line, tok.column);
-        parseExpr(vm, lex, currParent);
+        LispisReturnStatus lrs = parseExpr(vm, lex, currParent);
+        if (lrs != LRS_OK) {
+            free(vm, currParent);
+            return lrs;
+        }
         tok = peekToken(lex);
         if (tok.type == T_DOT) {
             nextToken(vm, lex); // eat dot;
             // UGLY HACK!!!
             Handle cdrElemHackLst = reserve(vm, allocConsPair(vm));
-            parseExpr(vm, lex, cdrElemHackLst);
+            LispisReturnStatus lrs = parseExpr(vm, lex, cdrElemHackLst);
             get(vm, currParent).pair->cdr =
                 get(vm, cdrElemHackLst).pair->car;
             free(vm, cdrElemHackLst);
+            if (lrs != LRS_OK) {
+                free(vm, currParent);
+                return lrs;
+            }
             break;
         } else if (tok.type != T_RIGHT_PAREN) {
             Value p = allocConsPair(vm);
@@ -448,4 +514,5 @@ void parseList(VM *vm, LexState *lex, Handle parent) {
         }
     }
     free(vm, currParent);
+    return LRS_OK;
 }

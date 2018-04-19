@@ -140,13 +140,13 @@ struct FunctionPrototype {
     size_t numArgs;
     size_t definedOnLine;
     Symbol nameSymbol;
+    char *file = 0;
     bool vararg;
 };
 
 struct Upvalue;
 
-// Rename to Closure
-struct Function {
+struct Closure {
     GCObject gcObj;
     size_t protoID; // Fuck life
     DynamicArray<Upvalue *> upvalues;
@@ -170,7 +170,7 @@ enum ValueType {
 struct ActivationFrame {
     DynamicArray<Value> registers;
     size_t stackTop = 0;
-    Function *func = 0;
+    Closure *func = 0;
     size_t pc = 0;
     //size_t caller = 0; // 0 if C, frameID of caller is this - 1
     bool calledFromCpp = true;
@@ -219,6 +219,7 @@ void free(VM *vm, Handle handle);
 
 // WARNING: arguments are in reverse,
 // ie last argument is the top of the stack
+// Change from bool to int, so you can return an error.
 typedef bool (*CFunction)(VM *vm, size_t numArgs);
 
 struct ConsPair;
@@ -255,18 +256,10 @@ struct Value {
     Value(ValueType t);
     ValueType type; // 8 bytes, bc of alignment
     union {
-        // Ugly, but then we can have a lineinfo pointer and
-        // Value is still sizeof(ptr)*3
-        // and we can give quasiquoted stuff the correct lineinfo etc
-        struct { // 16 bytes
-            ConsPair *pair;
-        };  
-        struct { // 16 bytes
-            uint64 opaqueType;
-            void *opaque;
-        };
+        ConsPair *pair;
+        void *opaque;
         Object *object;
-        Function *func;
+        Closure *func;
         CFunction cfunc;
         double doub;
         bool boolean;
@@ -317,7 +310,7 @@ Value allocConsPair(VM *vm);
 Object *allocObject(VM *vm);
 void setLineInfo(VM *vm, Handle handle, size_t line, size_t column);
 void setLineInfo(VM *vm, Value value, size_t line, size_t column);
-Function *allocFunction(VM *vm, size_t protoID);
+Closure *allocFunction(VM *vm, size_t protoID);
 Upvalue *allocUpvalue(VM *vm);
 
 void set(VM *vm, Object *o, Value key, Value value);
@@ -366,8 +359,6 @@ bool operator==(Value a, Value b) {
                 return a.object == b.object;
             } break;
             case V_OPAQUE_POINTER: {
-                // We assume that a.opaqueType == b.opaqueType if
-                // a.opaque == b.opaque
                 return a.opaque == b.opaque; 
             } break;
             case V_STRING: {
@@ -408,24 +399,30 @@ bool popBoolean(VM *vm);
 double popDouble(VM *vm);
 Symbol popSymbol(VM *vm);
 double peekDouble(VM *vm, int idx);
+char *peekString(VM *vm, int idx);
 void car(VM *vm);
 void cdr(VM *vm);
 void cons(VM *vm);
 void dup(VM *vm);
+void swap(VM *vm);
 
 bool isEmptyList(VM *vm);
 bool isList(VM *vm);
 bool isDouble(VM *vm);
 
 void pushNull(VM *vm);
+void pushUndef(VM *vm);
 void pushDouble(VM *vm, double doub);
 void pushSymbol(VM *vm, const char *symstr);
 void pushSymbol(VM *vm, Symbol symbol);
 void pushString(VM *vm, const char *str);
+void pushStringV(VM *vm, const char *format, ...);
 void pushBoolean(VM *vm, bool boolean);
-void pushOpaque(VM *vm, void *opaque, uint64 type);
+void pushOpaque(VM *vm, void *opaque);
 void pushHandle(VM *vm, Handle handle);
 void pushCFunction(VM *vm, CFunction cfunc);
+void pushStackTrace(VM *vm);
+bool lispisList(VM *vm, size_t numArgs);
 
 // Should be internal
 void pushValue(VM *vm, Value v);
@@ -437,6 +434,8 @@ uint32_t hashValue(Value v);
 
 void printValue(VM *vm, Value v, FILE *file = stdout);
 void printObject(VM *vm, Object *obj, FILE *file = stdout);
+void printStackTrace(VM *vm, FILE *file = stderr);
+void printRuntimeError(VM *vm);
 size_t length(Value v);
 
 #define bitsize(o) (sizeof(o)*8)
@@ -457,12 +456,20 @@ size_t length(Value v);
 
 #define getSImm(undecoded) (0x00000000FFFFFFFF & *((int32 *)&undecoded))
 
+enum LispisReturnStatus {
+    LRS_OK = 0,
+    LRS_COMPILETIME_ERROR = -1,
+    LRS_RUNTIME_ERROR = -2,
+    LRS_MACRO_ERROR = -3 // Compiletime and runtime
+};
 
-void doString(VM *vm, const char *prog, size_t numArgs = 0,
-              bool verbose = true);
-void doFile(VM *vm, const char *path, size_t numArgs = 0,
-            bool verbose = true);
-void call(VM *vm, uint8 numArgs);
+LispisReturnStatus doString(VM *vm, const char *prog, size_t numArgs = 0,
+                            bool verbose = true, const char *file = 0);
+
+LispisReturnStatus doFile(VM *vm, const char *path, size_t numArgs = 0,
+                          bool verbose = true);
+
+LispisReturnStatus call(VM *vm, uint8 numArgs);
 
 VM initVM(bool loadDefaults = true);
 

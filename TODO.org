@@ -198,3 +198,19 @@
   lispis function with the arguments from a lispis functions
   puts them in reverse.
   
++ [ ] Add to FunctionProto (or Function) if its a macro or not.
+  And add that info to stack-info.
+
++ [ ] Make errors from inside macros say where the macro is being
+  expanded (file and line)
+  
++ [ ] Somehow make null have a lineinfo when parsing.
+  We get garbage asserts on code like ().
+  
++ [ ] Make typedef CFunction return LispisReturnStatus instead of just
+  asserting
+  
++ [X] Calling do-file from lispis
+  
++ [ ] Make do-file a macro? Would make macros defined in the loaded file
+  work.

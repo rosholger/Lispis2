@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cassert>
 #include <cstring>
+#include "common.h"
+#include <cstdarg>
 
 
 OpCodeType opCodeTypes[] = {
@@ -30,13 +32,11 @@ ConsPair::ConsPair() : gcObj(GCObject{{GC_CONS_PAIR}}) {}
 
 Value::Value() : type(V_UNDEF) {
     //Null value
-    opaqueType = 0;
     opaque = 0;
 }
 
 Value::Value(ValueType t) : type(t) {
     //Null value
-    opaqueType = 0;
     opaque = 0;
 }
 
@@ -58,21 +58,21 @@ Value at(Value v, size_t idx) {
 }
 
 /******************************************************************
-                ╔═╗╦ ╦╔═╗╦╔═  ╔═╗╔═╗╔═╗              
-                ╠╣ ║ ║║  ╠╩╗  ║ ╦║  ║                
-                ╚  ╚═╝╚═╝╩ ╩  ╚═╝╚═╝╚═╝              
-                ╔═╗╦ ╦╔═╗╦╔═  ╔═╗╔╦╗╔╗               
-                ╠╣ ║ ║║  ╠╩╗  ║ ╦ ║║╠╩╗              
-                ╚  ╚═╝╚═╝╩ ╩  ╚═╝═╩╝╚═╝              
-                ╔═╗╦ ╦╔═╗╦╔═  ╦  ╦╔═╗╦  ╔═╗╦═╗╦╔╗╔╔╦╗
-                ╠╣ ║ ║║  ╠╩╗  ╚╗╔╝╠═╣║  ║ ╦╠╦╝║║║║ ║║
-                ╚  ╚═╝╚═╝╩ ╩   ╚╝ ╩ ╩╩═╝╚═╝╩╚═╩╝╚╝═╩╝
-                ╔═╗╦ ╦╔═╗╦╔═  ╔═╗╦  ╔═╗╔╗╔╔═╗        
-                ╠╣ ║ ║║  ╠╩╗  ║  ║  ╠═╣║║║║ ╦        
-                ╚  ╚═╝╚═╝╩ ╩  ╚═╝╩═╝╩ ╩╝╚╝╚═╝        
-                ╦  ╦ ╦╔═╗╔╦╗╔═╗  ╦ ╦╔═╗╦ ╦  ╔═╗╦  ╦  
-                ║  ╠═╣╠═╣ ║ ║╣   ╚╦╝║ ║║ ║  ╠═╣║  ║  
-                ╩  ╩ ╩╩ ╩ ╩ ╚═╝   ╩ ╚═╝╚═╝  ╩ ╩╩═╝╩═╝
+*               ╔═╗╦ ╦╔═╗╦╔═  ╔═╗╔═╗╔═╗                           *
+*               ╠╣ ║ ║║  ╠╩╗  ║ ╦║  ║                             *
+*               ╚  ╚═╝╚═╝╩ ╩  ╚═╝╚═╝╚═╝                           *
+*               ╔═╗╦ ╦╔═╗╦╔═  ╔═╗╔╦╗╔╗                            *
+*               ╠╣ ║ ║║  ╠╩╗  ║ ╦ ║║╠╩╗                           *
+*               ╚  ╚═╝╚═╝╩ ╩  ╚═╝═╩╝╚═╝                           *
+*               ╔═╗╦ ╦╔═╗╦╔═  ╦  ╦╔═╗╦  ╔═╗╦═╗╦╔╗╔╔╦╗             *
+*               ╠╣ ║ ║║  ╠╩╗  ╚╗╔╝╠═╣║  ║ ╦╠╦╝║║║║ ║║             *
+*               ╚  ╚═╝╚═╝╩ ╩   ╚╝ ╩ ╩╩═╝╚═╝╩╚═╩╝╚╝═╩╝             *
+*               ╔═╗╦ ╦╔═╗╦╔═  ╔═╗╦  ╔═╗╔╗╔╔═╗                     *
+*               ╠╣ ║ ║║  ╠╩╗  ║  ║  ╠═╣║║║║ ╦                     *
+*               ╚  ╚═╝╚═╝╩ ╩  ╚═╝╩═╝╩ ╩╝╚╝╚═╝                     *
+*               ╦  ╦ ╦╔═╗╔╦╗╔═╗  ╦ ╦╔═╗╦ ╦  ╔═╗╦  ╦               *
+*               ║  ╠═╣╠═╣ ║ ║╣   ╚╦╝║ ║║ ║  ╠═╣║  ║               *
+*               ╩  ╩ ╩╩ ╩ ╩ ╚═╝   ╩ ╚═╝╚═╝  ╩ ╩╩═╝╩═╝             *
 ******************************************************************/
   
 
@@ -144,10 +144,10 @@ void visitValue(VM *vm, Value *v) {
         } break;
         case V_FUNCTION: {
             if (v->func->gcObj.type == GC_BROKEN_HEART) {
-                v->func = *(Function **)((&v->func->gcObj)+1);
+                v->func = *(Closure **)((&v->func->gcObj)+1);
             } else {
-                v->func = (Function *)copyFromTo(vm, &v->func->gcObj,
-                                                 sizeof(Function));
+                v->func = (Closure *)copyFromTo(vm, &v->func->gcObj,
+                                                sizeof(Closure));
             }
         } break;
             /*
@@ -214,14 +214,14 @@ void visitObject(VM *vm, GCObject *o) {
             vm->gc.nextToExamine += sizeof(ConsPair);
         } break;
         case GC_FUNCTION: {
-            Function *func = (Function *)o;
+            Closure *func = (Closure *)o;
             for (size_t i = 0; i < size(&func->upvalues); ++i) {
                 if (func->upvalues[i]) {
                     func->upvalues[i] = visitUpvalue(vm,
                                                      func->upvalues[i]);
                 }
             }
-            vm->gc.nextToExamine += sizeof(Function);
+            vm->gc.nextToExamine += sizeof(Closure);
             //Nothing to do yet?
         } break;
         case GC_STRING:
@@ -281,13 +281,13 @@ void collect(VM *vm) {
                 if (vm->handles[i].func->gcObj.type ==
                     GC_BROKEN_HEART) {
                     vm->handles[i].func =
-                        *((Function **)((&vm->handles[i].func->gcObj) +
+                        *((Closure **)((&vm->handles[i].func->gcObj) +
                                         1));
                 } else {
                     vm->handles[i].func =
-                        (Function *)copyFromTo(vm,
-                                               &vm->handles[i].func->gcObj,
-                                               sizeof(Function));
+                        (Closure *)copyFromTo(vm,
+                                              &vm->handles[i].func->gcObj,
+                                              sizeof(Closure));
                 }
             } break;
             default:break;
@@ -296,11 +296,11 @@ void collect(VM *vm) {
     for (size_t i = 0; i < vm->frameStackTop; ++i) {
         if (vm->frameStack[i].func->gcObj.type == GC_BROKEN_HEART) {
             vm->frameStack[i].func =
-                *(Function **)((&vm->frameStack[i].func->gcObj)+1);
+                *(Closure **)((&vm->frameStack[i].func->gcObj)+1);
         } else {
             vm->frameStack[i].func =
-                (Function *)copyFromTo(vm, &vm->frameStack[i].func->gcObj,
-                                       sizeof(Function));
+                (Closure *)copyFromTo(vm, &vm->frameStack[i].func->gcObj,
+                                      sizeof(Closure));
         }
         for (size_t j = 0; j < size(&vm->frameStack[i].registers);
              ++j) {
@@ -320,7 +320,7 @@ void collect(VM *vm) {
         visitValue(vm, &vm->macros.slots[i].value);
     }
     if (vm->globals.parent) {
-        fprintf(stderr, "The globals table can not yet have a parent :(\n");
+        l_fprintf(stderr, "The globals table can not yet have a parent :(\n");
         assert(false);
     }
     while(vm->gc.nextToExamine != vm->gc.nextFree) {
@@ -342,7 +342,7 @@ void collect(VM *vm) {
     assert(!munmap(vm->gc.fromSpace, vm->gc.fromSpaceSize));
     size_t numberOfFreedBytes = (numberOfAllocatedBytes -
                                  vm->gc.nextFree);
-    printf("Freed: %lu bytes\n", numberOfFreedBytes);
+    l_fprintf(stdout, "Freed: %lu bytes\n", numberOfFreedBytes);
     vm->gc.fromSpace = 0;
     vm->gc.fromSpaceSize = 0;
 }
@@ -358,7 +358,7 @@ void *alloc(VM *vm, size_t size) {
     }
     assert(vm->gc.nextFree + size > vm->gc.nextFree);
     if (vm->gc.nextFree + size > vm->gc.toSpaceSize) {
-        fprintf(stderr, "Collection starting!\n");
+        l_fprintf(stderr, "Collection starting!\n");
         collect(vm);
         // Implement heap growing
         assert(vm->gc.nextFree + size <= vm->gc.toSpaceSize);
@@ -416,7 +416,7 @@ Object *allocObject(VM *vm) {
     return ret;
 }
 
-FunctionPrototype *getProto(VM *vm, Function *func) {
+FunctionPrototype *getProto(VM *vm, Closure *func) {
     return &vm->funcProtos[func->protoID];
 }
 
@@ -424,9 +424,9 @@ FunctionPrototype *getProto(VM *vm, ActivationFrame *frame) {
     return &vm->funcProtos[frame->func->protoID];
 }
 
-Function *allocFunction(VM *vm, size_t protoID) {
-    Function *ret = (Function *)alloc(vm, sizeof(Function));
-    *ret = Function();
+Closure *allocFunction(VM *vm, size_t protoID) {
+    Closure *ret = (Closure *)alloc(vm, sizeof(Closure));
+    *ret = Closure();
     ret->gcObj.type = GC_FUNCTION;
     ret->protoID = protoID;
     resize(&ret->upvalues, size(&getProto(vm, ret)->upvalues),
@@ -492,7 +492,7 @@ uint32_t hashValue(Value v) {
             return v.boolean;
         } break;
         default: {
-            fprintf(stderr, "Can only hash strings, symbols, bools and doubles\n");
+            l_fprintf(stderr, "Can only hash strings, symbols, bools and doubles\n");
             assert(false);
         } break;
     }
@@ -686,7 +686,7 @@ void clear(Object *obj) {
 void freeVM(VM *vm) {
     for (size_t i = 0; i < size(&vm->handles); ++i) {
         if (vm->handles[i].type != V_UNDEF) {
-            fprintf(stderr, "LEAKING %lu\n", i);
+            l_fprintf(stderr, "LEAKING %lu\n", i);
         }
     }
     munmap(vm->gc.toSpace, vm->gc.toSpaceSize);
@@ -741,6 +741,12 @@ double peekDouble(VM *vm, int idx) {
     return ret.doub;
 }
 
+char *peekString(VM *vm, int idx) {
+    Value ret = peek(vm, idx);
+    assert(ret.type == V_STRING);
+    return ret.str;
+}
+
 Symbol popSymbol(VM *vm) {
     Value ret = pop(vm);
     assert(ret.type == V_SYMBOL);
@@ -774,6 +780,13 @@ void cons(VM *vm) {
 
 void dup(VM *vm) {
     pushValue(vm, peek(vm, -1));
+}
+
+void swap(VM *vm) {
+    Value a = pop(vm);
+    Value b = pop(vm);
+    pushValue(vm, a);
+    pushValue(vm, b);
 }
 
 bool isEmptyList(VM *vm) {
@@ -817,6 +830,11 @@ void pushNull(VM *vm) {
     pushValue(vm, v);
 }
 
+void pushUndef(VM *vm) {
+    Value v{V_UNDEF};
+    pushValue(vm, v);
+}
+
 void pushSymbol(VM *vm, const char *symstr) {
     Value v = {V_SYMBOL};
     v.sym = intern(vm, symstr);
@@ -835,16 +853,24 @@ void pushString(VM *vm, const char *str) {
     pushValue(vm, v);
 }
 
+void pushStringV(VM *vm, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    char buffer[512];
+    vsprintf(buffer, format, args);
+    pushString(vm, buffer);
+    va_end(args);
+}
+
 void pushBoolean(VM *vm, bool boolean) {
     Value v{V_BOOLEAN};
     v.boolean = boolean;
     pushValue(vm, v);
 }
 
-void pushOpaque(VM *vm, void *opaque, uint64 type) {
+void pushOpaque(VM *vm, void *opaque) {
     Value v{V_OPAQUE_POINTER};
     v.opaque = opaque;
-    v.opaqueType = type;
     pushValue(vm, v);
 }
 
@@ -879,61 +905,123 @@ bool printModified(VM *vm, Value v, FILE *file) {
     }
     if (v.pair->car == intern(vm, "*print-as-an-integer*")) {
         assert(v.pair->cdr.type == V_DOUBLE);
-        fprintf(file, "%d", (int)v.pair->cdr.doub);
+        l_fprintf(file, "%d", (int)v.pair->cdr.doub);
         return true;
     }
     return false;
+}
+
+void asInt(VM *vm) {
+    pushSymbol(vm, "*print-as-an-integer*");
+    swap(vm);
+    cons(vm);
+}
+
+void printStackTrace(VM *vm, FILE *file) {
+    // We dont print def-line (cadddar trace)
+    for (size_t i = 0; !isEmptyList(vm); ++i) {
+        l_fprintf(file, "#%lu ", i);
+        // stack-trace
+        dup(vm);
+        // stack-trace, stack-trace
+        car(vm);
+        // stack-trace, (car stack-trace)
+        dup(vm);
+        // stack-trace, (car stack-trace), (car stack-trace)
+        car(vm);
+        // stack-trace, (car stack-trace), (caar stack-trace)
+        printValue(vm, pop(vm), file); // proc-name
+        // stack-trace, (car stack-trace)
+        cdr(vm);
+        // stack-trace, (cdar stack-trace)
+        dup(vm);
+        // stack-trace, (cdar stack-trace), (cdar stack-trace)
+        car(vm);
+        // stack-trace, (cdar stack-trace), (cadar stack-trace)
+        // stack-trace, (cdar stack-trace), (cadar stack-trace)
+        l_fprintf(file, " at ");
+        printValue(vm, pop(vm), file); // file-name
+        // stack-trace, (cdar stack-trace)
+        cdr(vm); // (cddar stack-trace)
+        // stack-trace, (cddar stack-trace)
+        car(vm);
+        // stack-trace, (caddar stack-trace)
+        asInt(vm);
+        // stack-trace, (as-int (caddar stack-trace))
+        l_fprintf(file, ":");
+        printValue(vm, pop(vm), file); // call-line
+        // stack-trace
+        l_fprintf(file, "\n");
+        cdr(vm);
+        // (cdr stack-trace)
+    }
+}
+
+void printRuntimeError(VM *vm) {
+    dup(vm); // (error-message . stack-trace)
+    car(vm); // (error-message . stack-trace), error-message
+    while (!isEmptyList(vm)) {
+        dup(vm); // error-message, error-message
+        car(vm); // error-message, (car error-message)
+        printValue(vm, pop(vm), stderr); // error-message
+        cdr(vm); // (cdr error-message)
+    }
+    l_fprintf(stderr, "\n");
+    pop(vm); // drop null
+    cdr(vm); // (stack-trace)
+    car(vm); // stack-trace
+    printStackTrace(vm); // empty
 }
 
 // TODO: symid to symbol string
 void printValue(VM *vm, Value v, FILE *file) {
     switch(v.type) {
         case V_CODE_POSITION: {
-            fprintf(file, "<code pos: %lu>", v.codePosition);
+            l_fprintf(file, "<code pos: %lu>", v.codePosition);
         } break;
         case V_REG_OR_CONSTANT: {
-            fprintf(file, "<reg or constant: %d global: %s>",
-                    v.regOrConstant, v.nonLocal ? "true" : "false");
+            l_fprintf(file, "<reg or constant: %d global: %s>",
+                      v.regOrConstant, v.nonLocal ? "true" : "false");
         } break;
         case V_STRING: {
-            fprintf(file, "%s", v.str);
+            l_fprintf(file, "%s", v.str);
         } break;
         case V_UNDEF: {
-            fprintf(file, "<undef>");
+            l_fprintf(file, "<undef>");
         } break;
         case V_OPAQUE_POINTER: {
-            fprintf(file, "<opaque: %p type: %llu>", v.opaque, v.opaqueType);
+            l_fprintf(file, "<opaque: %p>", v.opaque);
         } break;
         case V_FUNCTION: {
-            fprintf(file, "<func: %p>", v.func);
+            l_fprintf(file, "<func: %p>", v.func);
         } break;
         case V_OBJECT: {
             printObject(vm, v.object, file);
         } break;
         case V_CFUNCTION: {
-            fprintf(file, "<cfunc: %p>", v.cfunc);
+            l_fprintf(file, "<cfunc: %p>", v.cfunc);
         } break;
         case V_BOOLEAN: {
-            fprintf(file, "%s", v.boolean ? "true" : "false");
+            l_fprintf(file, "%s", v.boolean ? "true" : "false");
         } break;
         case V_DOUBLE: {
-            fprintf(file, "%f", v.doub);
+            l_fprintf(file, "%f", v.doub);
         } break;
         case V_SYMBOL: {
             if (v.sym.id >= 0) {
                 Value str = getFirstKey(&vm->symbolTable, v);
-                fprintf(file, "%s", str.str);
+                l_fprintf(file, "%s", str.str);
             } else {
-                fprintf(file, "GENSYMD_%d", -v.sym.id);
+                l_fprintf(file, "GENSYMD_%d", -v.sym.id);
             }
         } break;
         case V_CONS_PAIR: {
             if (!printModified(vm, v, file)) {
-                fprintf(file, "(");
+                l_fprintf(file, "(");
                 bool isFirst = true;
                 while(v.pair) {
                     if (!isFirst) {
-                        fprintf(file, " ");
+                        l_fprintf(file, " ");
                     } else {
                         isFirst = false;
                     }
@@ -941,29 +1029,29 @@ void printValue(VM *vm, Value v, FILE *file) {
                     if (v.pair->cdr.type == V_CONS_PAIR) {
                         v = v.pair->cdr;
                     } else {
-                        fprintf(file, " . ");
+                        l_fprintf(file, " . ");
                         printValue(vm, v.pair->cdr, file);
                         break;
                     }
                 }
-                fprintf(file, ")");
+                l_fprintf(file, ")");
             }
         } break;
     }
 }
 
 void printObject(VM *vm, Object *obj, FILE *file) {
-    fprintf(file, "{(*pointer* %p)", obj);
+    l_fprintf(file, "{(*pointer* %p)", obj);
     for (size_t i = 0; i < size(&obj->slots); ++i) {
         if (obj->slots[i].key.type != V_UNDEF) {
-            fprintf(file, " (");
+            l_fprintf(file, " (");
             printValue(vm, obj->slots[i].key, file);
-            fprintf(file, " ");
+            l_fprintf(file, " ");
             printValue(vm, obj->slots[i].value, file);
-            fprintf(file, ")");
+            l_fprintf(file, ")");
         }
     }
-    fprintf(file, "}");
+    l_fprintf(file, "}");
 }
 
 size_t length(Value v) {
@@ -979,68 +1067,68 @@ size_t length(Value v) {
 
 void printOpCode(OpCode undecoded) {
     OpCode op = getOp(undecoded);
-    printf("%s ", opCodeStr[op]);
+    l_fprintf(stdout, "%s ", opCodeStr[op]);
     switch (opCodeTypes[op]) {
         case OT_RS: {
             uint8 reg = getRegA(undecoded);
             int32 immId = getSImm(undecoded);
-            printf("r%x i%d\n", (uint32)reg, immId);
+            l_fprintf(stdout, "r%x i%d\n", (uint32)reg, immId);
         } break;
         case OT_S: {
             int32 immId = getSImm(undecoded);
-            printf("i%d\n", immId);
+            l_fprintf(stdout, "i%d\n", immId);
         } break;
         case OT_I: {
             uint32 immId = getImm(undecoded);
-            printf("i%x\n", immId);
+            l_fprintf(stdout, "i%x\n", immId);
         } break;
         case OT_N: {
-            printf("\n");
+            l_fprintf(stdout, "\n");
         } break;
         case OT_R: {
             uint8 reg = getRegA(undecoded);
-            printf("r%x\n", (uint32)reg);
+            l_fprintf(stdout, "r%x\n", (uint32)reg);
         } break;
         case OT_RR: {
             uint8 a = getRegA(undecoded);
             uint8 b = getRegB(undecoded);
-            printf("r%x r%x\n", (uint32)a, (uint32)b);
+            l_fprintf(stdout, "r%x r%x\n", (uint32)a, (uint32)b);
         } break;
         case OT_RRR: {
             uint8 a = getRegA(undecoded);
             uint8 b = getRegB(undecoded);
             uint8 c = getRegC(undecoded);
-            printf("r%x r%x r%x\n", (uint32)a, (uint32)b, (uint32)c);
+            l_fprintf(stdout, "r%x r%x r%x\n", (uint32)a, (uint32)b, (uint32)c);
         } break;
         case OT_RI: {
             uint8 reg = getRegA(undecoded);
             uint32 immId = getImm(undecoded);
-            printf("r%x i%x\n", (uint32)reg, immId);
+            l_fprintf(stdout, "r%x i%x\n", (uint32)reg, immId);
         } break;
     }
 }
 
 void printFuncProtoCode(VM *vm, FunctionPrototype *func) {
-    printf("VARARG: %s\n", func->vararg ? "true" : "false");
-    printf("NUM ARGS: %lu\n", func->numArgs);
-    printf("CONSTANT TABLE:\n");
+    l_fprintf(stdout, "VARARG: %s\n", func->vararg ? "true" : "false");
+    l_fprintf(stdout, "NUM ARGS: %lu\n", func->numArgs);
+    l_fprintf(stdout, "CONSTANT TABLE:\n");
     for (size_t i = 0; i < size(&func->constants); ++i) {
-        printf("i%lx ", i);
+        l_fprintf(stdout, "i%lx ", i);
         printValue(vm, func->constants[i]);
-        printf("\n");
+        l_fprintf(stdout, "\n");
     }
-    printf("CODE:\n");
+    l_fprintf(stdout, "CODE:\n");
     for (size_t i = 0; i < size(&func->code); ++i) {
         if (i && func->lines[i] == func->lines[i-1]) {
-            printf("|       ");
+            l_fprintf(stdout, "|       ");
         } else {
-            printf("%-7lu ", func->lines[i]);
+            l_fprintf(stdout, "%-7lu ", func->lines[i]);
         }
         printOpCode(func->code[i]);
     }
 }
 
-size_t allocFrame(VM *vm, Function *func) {
+size_t allocFrame(VM *vm, Closure *func) {
     ActivationFrame *frame;
     if (vm->frameStackTop < size(&vm->frameStack)) {
         frame = &vm->frameStack[vm->frameStackTop];
@@ -1090,8 +1178,8 @@ void closeAllUpvalues(VM *vm, ActivationFrame *frame) {
 }
 
 // This is awfull
-void pushArgument(VM *vm, ActivationFrame *frame,
-                  uint8 argNum, Handle value) {
+LispisReturnStatus pushArgument(VM *vm, ActivationFrame *frame,
+                                uint8 argNum, Handle value) {
     uint8 lastVariableRegister = getProto(vm, frame)->numArgs-1;
     // weird but safe from integer underflow
     if ((argNum < getProto(vm, frame)->numArgs &&
@@ -1121,10 +1209,10 @@ void pushArgument(VM *vm, ActivationFrame *frame,
                 lst->pair->cdr = tail;
             }
         } else {
-            fprintf(stderr, "Not correct amount of arguments!\n");
-            assert(false);
+            return LRS_RUNTIME_ERROR;
         }
     }
+    return LRS_OK;
 }
 
 bool correctNumberOfArgs(VM *vm, ActivationFrame *frame, uint8 numArgs) {
@@ -1140,7 +1228,28 @@ bool correctNumberOfArgs(VM *vm, ActivationFrame *frame, uint8 numArgs) {
     return true;
 }
 
-Value runFunc(VM *vm, size_t frameID) {
+LispisReturnStatus runFunc(VM *vm, size_t frameID) {
+
+#define POP_ALL_LISPIS_FRAMES()                                         \
+    do {                                                                \
+        while (!frame->calledFromCpp) {                                 \
+            frameID -= 1;                                               \
+            ActivationFrame *caller = &vm->frameStack[frameID-1];       \
+            frame = caller;                                             \
+            popFrame(vm);                                               \
+        }                                                               \
+    } while (false)
+
+#define CRASH_LISPIS()                          \
+    do {                                        \
+        pushStackTrace(vm);                     \
+        pushNull(vm);                           \
+        cons(vm);                               \
+        cons(vm);                               \
+        POP_ALL_LISPIS_FRAMES();                \
+        return LRS_RUNTIME_ERROR;               \
+    } while (false)
+
     OpCode undecoded;
     ActivationFrame *frame = &vm->frameStack[frameID-1];
  loop:
@@ -1178,7 +1287,11 @@ Value runFunc(VM *vm, size_t frameID) {
             } else if (callee.type == V_CFUNCTION) {
                 goto ccall;
             } else {
-                assert(false);
+                pushString(vm, "Cant call ");
+                pushValue(vm, callee);
+                pushString(vm, " since its not a procedure");
+                lispisList(vm, 3);
+                CRASH_LISPIS();
             }
         } break;
         case OP_RETURN: {
@@ -1193,7 +1306,8 @@ Value runFunc(VM *vm, size_t frameID) {
             } else {
                 Value ret = frame->registers[reg];
                 popFrame(vm);
-                return ret;
+                pushValue(vm, ret);
+                return LRS_OK;
             }
             popFrame(vm);
         } break;
@@ -1206,7 +1320,8 @@ Value runFunc(VM *vm, size_t frameID) {
                 frame = caller;
             } else {
                 popFrame(vm);
-                return Value{V_UNDEF};
+                pushUndef(vm);
+                return LRS_OK;
             }
             popFrame(vm);
         } break;
@@ -1234,11 +1349,11 @@ Value runFunc(VM *vm, size_t frameID) {
             frame->pc++;
         } break;
         case OP_PUSH_ARG: {
-            fprintf(stderr, "ICE: stray PUSH_ARG at %lu\n", frame->pc);
+            l_fprintf(stderr, "ICE: stray PUSH_ARG at %lu\n", frame->pc);
             assert(false);
         } break;
         case OP_CALL: {
-            fprintf(stderr, "ICE: stray CALL at %lu\n", frame->pc);
+            l_fprintf(stderr, "ICE: stray CALL at %lu\n", frame->pc);
             assert(false);
         } break;
         case OP_MAKE_OBJECT: {
@@ -1254,13 +1369,17 @@ Value runFunc(VM *vm, size_t frameID) {
             uint8 valReg = getRegC(undecoded);
             Value obj = frame->registers[objReg];
             if (obj.type != V_OBJECT) {
-                fprintf(stderr, "ERROR: Can only set slot on object\n");
+                l_fprintf(stderr, "ICE: Can only set slot on object\n");
                 assert(false);
             }
             Value key = frame->registers[keyReg];
             if (key.type != V_SYMBOL) {
-                fprintf(stderr, "ERROR: Object key can only be a symbol (so far)\n");
-                assert(false);
+                pushString(vm, "Object key can only be a symbol (so far)"
+                           ", ");
+                pushValue(vm, key);
+                pushString(vm, " is not a symbol");
+                lispisList(vm, 3);
+                CRASH_LISPIS();
             }
             Value val = frame->registers[valReg];
             set(vm, obj.object, key, val);
@@ -1270,7 +1389,7 @@ Value runFunc(VM *vm, size_t frameID) {
             uint8 reg = getRegA(undecoded);
             uint32 k = getImm(undecoded);
             if (getProto(vm, frame)->constants[k].type != V_SYMBOL) {
-                fprintf(stderr, "ICE: DEFINE_GLOBAL imm not a symbol\n");
+                l_fprintf(stderr, "ICE: DEFINE_GLOBAL imm not a symbol\n");
                 assert(false);
             }
 
@@ -1282,16 +1401,16 @@ Value runFunc(VM *vm, size_t frameID) {
             uint8 reg = getRegA(undecoded);
             uint32 k = getImm(undecoded);
             if (getProto(vm, frame)->constants[k].type != V_SYMBOL) {
-                fprintf(stderr, "ICE: GET_GLOBAL imm not a symbol\n");
+                l_fprintf(stderr, "ICE: GET_GLOBAL imm not a symbol\n");
                 assert(false);
             }
             if (!keyExists(&vm->globals,
                            getProto(vm, frame)->constants[k])) {
-                fprintf(stderr, "ERROR: Global ");
-                printValue(vm, getProto(vm, frame)->constants[k], stderr);
-                fprintf(stderr, " does not exist\n");
-                assert(false);
-                        
+                pushString(vm, "Global ");
+                pushValue(vm, getProto(vm, frame)->constants[k]);
+                pushString(vm, " does not exist");
+                lispisList(vm, 3);
+                CRASH_LISPIS();
             }
 
             frame->registers[reg] = get(&vm->globals,
@@ -1302,16 +1421,16 @@ Value runFunc(VM *vm, size_t frameID) {
             uint8 reg = getRegA(undecoded);
             uint32 k = getImm(undecoded);
             if (getProto(vm, frame)->constants[k].type != V_SYMBOL) {
-                fprintf(stderr, "ICE: GET_GLOBAL imm not a symbol\n");
+                l_fprintf(stderr, "ICE: GET_GLOBAL imm not a symbol\n");
                 assert(false);
             }
             if (!keyExists(&vm->globals,
                            getProto(vm, frame)->constants[k])) {
-                fprintf(stderr, "ERROR: Global ");
-                printValue(vm, getProto(vm, frame)->constants[k], stderr);
-                fprintf(stderr, " does not exist\n");
-                assert(false);
-                        
+                pushString(vm, "Global ");
+                pushValue(vm, getProto(vm, frame)->constants[k]);
+                pushString(vm, " does not exist");
+                lispisList(vm, 3);
+                CRASH_LISPIS();
             }
 
             set(vm, &vm->globals, getProto(vm, frame)->constants[k],
@@ -1358,10 +1477,15 @@ Value runFunc(VM *vm, size_t frameID) {
             frame->registers[reg] = Value{V_UNDEF};
             frame->pc++;
         } break;
+        case OP_CRASH: {
+            uint8 reg = getRegA(undecoded);
+            pushValue(vm, frame->registers[reg]);
+            CRASH_LISPIS();
+        } break;
         default: {
-            printf("OP: ");
+            l_fprintf(stdout, "OP: ");
             printOpCode(undecoded);
-            printf("is not yet implemented\n");
+            l_fprintf(stdout, "is not yet implemented\n");
             assert(false);
         } break;
     }
@@ -1391,7 +1515,19 @@ Value runFunc(VM *vm, size_t frameID) {
             case OP_PUSH_ARG: {
                 uint8 srcReg = getRegA(undecoded);
                 Handle value = reserve(vm, frame->registers[srcReg]);
-                pushArgument(vm, calleeFrame, dstReg, value);
+                if (pushArgument(vm, calleeFrame, dstReg, value) !=
+                    LRS_OK) {
+                    pushString(vm, "Not correct amount of arguments! ");
+                    pushSymbol(vm, getProto(vm, calleeFrame)->nameSymbol);
+                    pushString(vm, " requires ");
+                    pushDouble(vm, getProto(vm, calleeFrame)->numArgs);
+                    asInt(vm);
+                    pushString(vm, " given more");
+                    lispisList(vm, 5);
+                    closeAllUpvalues(vm, calleeFrame);
+                    popFrame(vm);
+                    CRASH_LISPIS();
+                }
                 free(vm, value);
                 dstReg++;
                 frame->pc++;
@@ -1402,14 +1538,24 @@ Value runFunc(VM *vm, size_t frameID) {
                 frame = calleeFrame;
                 frameID = calleeFrameID;
                 if (!correctNumberOfArgs(vm, frame, dstReg)) {
-                    fprintf(stderr, "Not correct amount of arguments!\n");
-                    assert(false);
+                    pushString(vm, "Not correct amount of arguments! ");
+                    pushSymbol(vm, getProto(vm, frame)->nameSymbol);
+                    pushString(vm, " requires ");
+                    pushDouble(vm, getProto(vm, frame)->numArgs);
+                    asInt(vm);
+                    pushString(vm, " given ");
+                    pushDouble(vm, dstReg);
+                    asInt(vm);
+                    lispisList(vm, 6);
+                    closeAllUpvalues(vm, calleeFrame);
+                    popFrame(vm);
+                    CRASH_LISPIS();
                 }
                 goto loop;
             } break;
             default: {
-                fprintf(stderr,
-                        "ICE: Illegal %s between SETUP_CALL and CALL\n",
+                l_fprintf(stderr,
+                          "ICE: Illegal %s between SETUP_CALL and CALL\n",
                         opCodeStr[instr]);
                 assert(false);
             } break;
@@ -1455,24 +1601,29 @@ Value runFunc(VM *vm, size_t frameID) {
                 goto loop;
             } break;
             default: {
-                fprintf(stderr,
-                        "ICE: Illegal %s between SETUP_CALL and CALL\n",
+                l_fprintf(stderr,
+                          "ICE: Illegal %s between SETUP_CALL and CALL\n",
                         opCodeStr[instr]);
                 assert(false);
             } break;
         }
         goto cpushArgLoop;
     }
+    // Good citizen
+#undef POP_ALL_LISPIS_FRAMES
+#undef CRASH_LISPIS
 }
 
-void call(VM *vm, uint8 numArgs) {
+LispisReturnStatus call(VM *vm, uint8 numArgs) {
     Value callee = pop(vm);
     assert(callee.type == V_FUNCTION);
     size_t frameID = allocFrame(vm, callee.func);
     ActivationFrame *frame = &vm->frameStack[frameID-1];
     // TODO ((lambda args body))
     if (!correctNumberOfArgs(vm, frame, numArgs)) {
-        fprintf(stderr, "Not correct amount of argument!\n");
+        // Probably good that this is an assert, since
+        // it's only called from C++
+        l_fprintf(stderr, "Not correct amount of argument!\n");
         assert(false);
     }
     if (getProto(vm, frame)->numArgs > 0) {
@@ -1483,28 +1634,41 @@ void call(VM *vm, uint8 numArgs) {
     for (size_t i = vm->apiStackTop-numArgs;
          i < vm->apiStackTop; ++i) {
         Handle value = reserve(vm, vm->apiStack[i]);
-        pushArgument(vm, frame, reg, value);
+        if (pushArgument(vm, frame, reg, value) != LRS_OK) {
+            // This to, assert is good!
+            assert(false);
+        }
         free(vm, value);
         reg++;
     }
     vm->apiStackTop -= numArgs;
-    pushValue(vm, runFunc(vm, frameID));
+    return runFunc(vm, frameID);
 }
 
-void doString(VM *vm, const char *prog, size_t numArgs, bool verbose) {
-    pushValue(vm, compileString(vm, (char *)prog, verbose));
-    call(vm, numArgs);
+LispisReturnStatus doString(VM *vm, const char *prog,
+                            size_t numArgs, bool verbose,
+              const char *file) {
+    LispisReturnStatus lrs = 
+        compileString(vm, (char *)prog, verbose, file);
+    if (lrs != LRS_OK) {
+        return lrs;
+    }
+    return call(vm, numArgs);
 }
 
-void doFile(VM *vm, const char *path, size_t numArgs, bool verbose) {
-    pushValue(vm, compileFile(vm, path, verbose));
+LispisReturnStatus doFile(VM *vm, const char *path, size_t numArgs,
+                          bool verbose) {
+    LispisReturnStatus lrs = compileFile(vm, path, verbose);
+    if (lrs != LRS_OK) {
+        return lrs;
+    }
     if (verbose) {
         for (size_t i = 0; i < size(&vm->funcProtos); ++i) {
-            printf("\nFunction %lu:\n", i);
+            l_fprintf(stdout, "\nFunction %lu:\n", i);
             printFuncProtoCode(vm, &vm->funcProtos[i]);
         }
     }
-    call(vm, numArgs);
+    return call(vm, numArgs);
 }
 
 bool lispisLT(VM *vm, size_t numArgs) {
@@ -1602,11 +1766,11 @@ bool lispisCar(VM *vm, size_t numArgs) {
     assert(numArgs == 1);
     Value p = pop(vm);
     if (p.type != V_CONS_PAIR) {
-        fprintf(stderr, "ERROR: car argument not a cons pair\n");
+        l_fprintf(stderr, "ERROR: car argument not a cons pair\n");
         assert(false);
     }
     if (!p.pair) {
-        fprintf(stderr, "ERROR: car argument '()\n");
+        l_fprintf(stderr, "ERROR: car argument '()\n");
         assert(false);
     }
     pushValue(vm, p.pair->car);
@@ -1617,11 +1781,11 @@ bool lispisCdr(VM *vm, size_t numArgs) {
     assert(numArgs == 1);
     Value p = pop(vm);
     if (p.type != V_CONS_PAIR) {
-        fprintf(stderr, "ERROR: cdr argument not a cons pair\n");
+        l_fprintf(stderr, "ERROR: cdr argument not a cons pair\n");
         assert(false);
     }
     if (!p.pair) {
-        fprintf(stderr, "ERROR: cdr argument '()\n");
+        l_fprintf(stderr, "ERROR: cdr argument '()\n");
         assert(false);
     }
     pushValue(vm, p.pair->cdr);
@@ -1716,7 +1880,7 @@ bool lispisPrint(VM *vm, size_t numArgs) {
 
 bool lispisPrintln(VM *vm, size_t numArgs) {
     lispisPrint(vm, numArgs);
-    printf("\n");
+    l_fprintf(stdout, "\n");
     return false;
 }
 
@@ -1739,12 +1903,6 @@ bool lispisGensym(VM *vm, size_t numArgs) {
     return true;
 }
 
-bool lispisCrash(VM *vm, size_t numArgs) {
-    //assert(false);
-    _exit(1);
-    return false;
-}
-
 bool lispisSetCdr(VM *vm, size_t numArgs) {
     assert(numArgs == 2);
     Handle newCdr = reserve(vm, pop(vm));
@@ -1758,8 +1916,7 @@ bool lispisSetCdr(VM *vm, size_t numArgs) {
 
 bool lispisStackInfo(VM *vm, size_t numArgs) {
     size_t frameNumber = 0;
-    if (numArgs == 0) {
-    } else if (numArgs == 1) {
+    if (numArgs == 1) {
         assert(isDouble(vm));
         frameNumber = popDouble(vm);
     } else {
@@ -1774,10 +1931,14 @@ bool lispisStackInfo(VM *vm, size_t numArgs) {
         vm->funcProtos[frame->func->protoID].lines[frame->pc];
     Symbol name =
         vm->funcProtos[frame->func->protoID].nameSymbol;
+    char *file = 
+        vm->funcProtos[frame->func->protoID].file;
     pushSymbol(vm, name);
-    pushDouble(vm, defLine);
+    pushString(vm, file);
     pushDouble(vm, callLine);
+    pushDouble(vm, defLine);
     pushNull(vm);
+    cons(vm);
     cons(vm);
     cons(vm);
     cons(vm);
@@ -1791,8 +1952,52 @@ bool lispisStackDepth(VM *vm, size_t numArgs) {
     return true;
 }
 
+// How to deal with C functions in the stack?
+void pushStackTrace(VM *vm) {
+    for (int i = ((int)vm->frameStackTop - 1); i >= 0; --i) {
+        if (i == ((int)vm->frameStackTop - 1)) {
+            pushDouble(vm, i);
+            lispisStackInfo(vm, 1);
+            pushNull(vm);
+        } else {
+            Value tmp = pop(vm);
+            pushDouble(vm, i);
+            lispisStackInfo(vm, 1);
+            pushValue(vm, tmp);
+        }
+        cons(vm);
+    }
+}
+
+bool lispisStackTrace(VM *vm, size_t numArgs) {
+    assert(numArgs == 0);
+    pushStackTrace(vm);
+    return true;
+}
+
+bool lispisAsInt(VM *vm, size_t numArgs) {
+    assert(numArgs == 1);
+    asInt(vm);
+    return true;
+}
+
+bool lispisPrintStackTrace(VM *vm, size_t numArgs) {
+    assert(numArgs == 1);
+    printStackTrace(vm);
+    return false;
+}
+
+bool lispisDoFile(VM *vm, size_t numArgs) {
+    assert(numArgs > 0);
+    char *file = peekString(vm, -numArgs);
+    LispisReturnStatus lrs = doFile(vm, file, numArgs-1, false);
+    assert(lrs == LRS_OK);
+    return true;
+}
+
 VM initVM(bool loadDefaults) {
     VM vm;
+    vm.funcProtos = DynamicArray<FunctionPrototype>();
     if (loadDefaults) {
         //pushCFunction(&vm, lispisAnd);
         //setGlobal(&vm, intern(&vm, "and"));
@@ -1836,118 +2041,19 @@ VM initVM(bool loadDefaults) {
         setGlobal(&vm, intern(&vm, "newline"));
         pushCFunction(&vm, lispisGensym);
         setGlobal(&vm, intern(&vm, "gensym"));
-        pushCFunction(&vm, lispisCrash);
-        setGlobal(&vm, intern(&vm, "crash!"));
         pushCFunction(&vm, lispisStackInfo);
         setGlobal(&vm, intern(&vm, "stack-info"));
         pushCFunction(&vm, lispisStackDepth);
         setGlobal(&vm, intern(&vm, "stack-depth"));
-        doString(&vm,
-                 "(defmacro and args"
-                 "  (if (null? (cdr args))"
-                 "      (car args)"
-                 "      (list 'if (car args)"
-                 "            (cons 'and (cdr args)) 'false)))"
-                 ""
-                 "(defmacro or args"
-                 "  (if (null? (cdr args))"
-                 "      (car args)"
-                 "      (list 'if (car args)"
-                 "            'true (cons 'or (cdr args)))))"
-                 ""
-                 "(defmacro cond branches"
-                 "  (let inner"
-                 "    (lambda (branches)"
-                 "      (if (null? branches)"
-                 "          '()"
-                 "          (if (null? (cdr branches))"
-                 "              (append '(if) (car branches))"
-                 "              (append '(if) (car branches)"
-                 "                      (list (inner (cdr branches))))))))"
-                 "  (inner branches))"
-                 ""
-                 "(define append"
-                 "  (lambda args"
-                 "    (let append-inner"
-                 "      (lambda (lst lsts)"
-                 "        (if (null? lst)"
-                 "            (if (null? lsts)"
-                 "                '()"
-                 "                (append-inner (car lsts) (cdr lsts)))"
-                 "            (cons (car lst)"
-                 "                  (append-inner (cdr lst) lsts)))))"
-                 "    (if (and (not (null? args))"
-                 "             (not (list? (car args))))"
-                 "        (car args)"
-                 "        (append-inner '() args))))"
-                 , 0, false);
-        doString(&vm, "\
-(let quasiquote? (x)\
-     (and (list? x) (not (null? x)) (= (car x) 'quasiquote)\
-          (list? (cdr x)) (not (null? (cdr x)))))\
-\
-(let unquote? (x)\
-     (and (list? x) (not (null? x)) (= (car x) 'unquote)\
-          (list? (cdr x)) (not (null? (cdr x)))))\
-\
-(let unquote-splicing? (x)\
-     (and (list? x) (not (null? x)) (= (car x) 'unquote-splicing)\
-          (list? (cdr x)) (not (null? (cdr x)))))\
-\
-(let q-data (x)\
-     (car (cdr x)))\
-\
-(define qq-expand (x)\
-     (cond ((unquote? x)\
-            (q-data x))\
-           ((unquote-splicing? x)\
-            (error \"Illegal ,@\"))\
-           ((quasiquote? x)\
-            (qq-expand\
-             (qq-expand (q-data x))))\
-           ((and (list? x) (not (null? x)))\
-            (list 'append\
-                  (qq-expand-list (car x))\
-                  (qq-expand (cdr x))))\
-           (true (list 'quote x))))\
-\
-(define qq-expand-list (x)\
-     (cond ((unquote? x)\
-            (list 'list (q-data x)))\
-           ((unquote-splicing? x)\
-            (q-data x))\
-           ((quasiquote? x)\
-            (qq-expand-list\
-             (qq-expand (q-data x))))\
-           ((and (list? x) (not (null? x)))\
-            (list 'list\
-                  (list 'append\
-                        (qq-expand-list (car x))\
-                        (qq-expand (cdr x)))))\
-           (true (list 'quote (list x)))))\
-"
-                 , 0, false);
-        doString(&vm,
-                 "\
-(defmacro quasiquote (arg)\
-  (qq-expand arg))\
-"
-                 , 0, false);
-        doString(&vm,
-                 "\
-(defmacro for (init . body)\
-  (let iter (gensym))\
-  (let for-label (gensym))\
-  `(scope\
-    (let ,iter ,(car (cdr init)))\
-    (label ,for-label)\
-    (if (get-slot ,iter 'alive)\
-        (scope\
-         (let ,(car init) ((get-slot ,iter 'update) ,iter))\
-         ,@body\
-         (go ,for-label)))))\
-"
-                 , 0, false);
+        pushCFunction(&vm, lispisStackTrace);
+        setGlobal(&vm, intern(&vm, "stack-trace"));
+        pushCFunction(&vm, lispisAsInt);
+        setGlobal(&vm, intern(&vm, "as-int"));
+        pushCFunction(&vm, lispisPrintStackTrace);
+        setGlobal(&vm, intern(&vm, "print-stack-trace"));
+        pushCFunction(&vm, lispisDoFile);
+        setGlobal(&vm, intern(&vm, "do-file"));
+        #include "stdlib.h"
     }
     return vm;
 }
