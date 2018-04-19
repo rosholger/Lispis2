@@ -7,4 +7,5 @@ vgcore.*
 \#*\#
 *.out
 server
-repl
+client
+#*
