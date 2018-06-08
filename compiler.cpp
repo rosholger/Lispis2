@@ -25,7 +25,7 @@
     do {                                                \
         pushStringV(vm, str, ##__VA_ARGS__);            \
         *lrsp = LRS_COMPILETIME_ERROR;                  \
-        assert(false);                                      \
+        return r;                                       \
     } while(false)
 
 #define STRINGIFY(X) #X
@@ -76,6 +76,11 @@ Value allocConstant(FunctionPrototype *func, Value val) {
     Value ret{V_REG_OR_CONSTANT};
     ret.regOrConstant = k;
     return ret;
+}
+
+void popInstr(FunctionPrototype *func) {
+    pop(&func->code);
+    pop(&func->lines);
 }
 
 void addRRR(FunctionPrototype *func, OpCode op, size_t line,
@@ -636,7 +641,9 @@ ASTSet setToAST(VM *vm, ArenaAllocator *arena, Handle tree,
 
 void setMacroExpansionLineInfo(VM *vm, Handle tree, LineInfo info) {
     if (type(vm, tree) == V_CONS_PAIR && get(vm, tree).pair) {
-        setLineInfo(vm, tree, info.line, info.column);
+        if (!hasLineInfo(get(vm, tree))) {
+            setLineInfo(vm, tree, info.line, info.column);
+        }
         setMacroExpansionLineInfo(vm, reserve(vm,
                                               get(vm, tree).pair->car),
                                   info);
@@ -665,7 +672,7 @@ void assertLineInfo(VM *vm, Value tree) {
 }
 
 Handle expandMacro(VM *vm, Handle tree, LispisReturnStatus *lrs) {
-    Value macro = get(&vm->macros, get(vm, tree).pair->car);
+    Value macro = get(vm, &vm->macros, get(vm, tree).pair->car);
     Value argList = get(vm, tree).pair->cdr;
     assert(argList.type == V_CONS_PAIR);
     uint8 numArgs = 0;
@@ -687,6 +694,13 @@ Handle expandMacro(VM *vm, Handle tree, LispisReturnStatus *lrs) {
         *lrs = LRS_MACRO_ERROR;
         Handle nullHandle{12345678};
         return nullHandle;
+    }
+
+    if (peek(vm, -1).type == V_UNDEF) {
+        // Hack to insert a noop
+        pushSymbol(vm, "scope");
+        pushNull(vm);
+        cons(vm);
     }
         
     Handle ret = reserve(vm, pop(vm));
@@ -865,7 +879,8 @@ ASTNode *exprToAST(VM *vm, ArenaAllocator *arena, Handle tree,
             } else {
                 if (get(vm, tree).pair &&
                     get(vm, tree).pair->car.type == V_SYMBOL &&
-                    keyExists(&vm->macros, get(vm, tree).pair->car)) {
+                    keyExists(vm, &vm->macros,
+                              get(vm, tree).pair->car)) {
 
                     Handle newTree = expandMacro(vm, tree, lrs);
                     if (*lrs != LRS_OK) {
@@ -932,15 +947,20 @@ void printReserved(VM *vm) {
     l_fprintf(stdout, "\n");
 }
 
-void patchGoStatements(VM *vm, Scope scope) {
+LispisReturnStatus patchGoStatements(VM *vm, Scope scope) {
     for (size_t i = 0; i < size(scope.goLabelPositions); ++i) {
         Value label = (*scope.goLabelPositions)[i].key;
-        int64 target = get(scope.labelPositions, label).codePosition;
+        if (!keyExists(vm, scope.labelPositions, label)) {
+            pushStringV(vm, "Label does not exist\n");
+            return LRS_COMPILETIME_ERROR;
+        }
+        int64 target = get(vm, scope.labelPositions, label).codePosition;
         int64 source = (*scope.goLabelPositions)[i].value.codePosition;
         patchS(&vm->funcProtos[scope.protoID], source, OP_JMP,
                target - source);
         //source - (target + 1)); // + 1 or not?
     }
+    return LRS_OK;
 }
 
 // WARNING!!! adds stuff to the current scope!!
@@ -962,8 +982,8 @@ void patchGoStatements(VM *vm, Scope scope) {
     s.goLabelPositions = &_newGoLabelPositions;         \
     s.valueToConstantSlot = &_newValueToConstantSlot
 
-LispisReturnStatus compileString(VM *vm, char *prog, bool verbose,
-                                 const char *filePath) {
+LispisReturnStatus doString(VM *vm, const char *prog, bool verbose,
+                                const char *filePath) {
     LexState lex;
     LispisReturnStatus lrs = initLexerState(vm, prog, &lex);
     if (lrs != LRS_OK) {
@@ -976,6 +996,9 @@ LispisReturnStatus compileString(VM *vm, char *prog, bool verbose,
     allocScope(topScope, 0, 0, strdup(filePath), intern(vm, filePath)); 
     ASTNode *node = 0;
     ArenaAllocator arena;
+    Value func = {V_FUNCTION};
+    func.func = allocFunction(vm, topScope.protoID);
+    size_t topFrameID = allocFrame(vm, func.func);
     {
         Value root = allocConsPair(vm);
         Handle handle = reserve(vm, root);
@@ -1010,6 +1033,24 @@ LispisReturnStatus compileString(VM *vm, char *prog, bool verbose,
                 node->traverse(vm);
             }
             node->emit(vm, topScope);
+            size_t numberOfInstr = size(&vm->funcProtos[topScope.protoID].lines);
+            if (numberOfInstr) {
+                size_t line = 
+                    vm->funcProtos[topScope.protoID].lines[numberOfInstr-1];
+                addN(&vm->funcProtos[topScope.protoID], OP_NO_RET_RET,
+                     line);
+                // This breaks (go)ing to a label defined after the
+                // go statement at top-level
+                if (patchGoStatements(vm, topScope) != LRS_OK) {
+                    return LRS_COMPILETIME_ERROR;
+                }
+                resizeFrame(vm, topFrameID);
+                lrs = runFunc(vm, topFrameID);
+                if (lrs != LRS_OK) {
+                    return lrs; // FIXME
+                }
+                popInstr(&vm->funcProtos[topScope.protoID]);
+            }
             if (peekToken(&lex).type != T_EOF) {
                 Value p = allocConsPair(vm);
                 get(vm, currTree).pair->cdr = p;
@@ -1022,7 +1063,8 @@ LispisReturnStatus compileString(VM *vm, char *prog, bool verbose,
             }
         }
     }
-    lassertStr(vm, &lrs, node, 0, "ERROR: Empty 'file' is not allowed\n");
+    lassertStr(vm, &lrs, node, LRS_COMPILETIME_ERROR,
+                "ERROR: Empty 'file' is not allowed\n");
     size_t returnLine = 0;
     if (size(&vm->funcProtos[topScope.protoID].lines)) {
         returnLine = last(&vm->funcProtos[topScope.protoID].lines);
@@ -1036,15 +1078,15 @@ LispisReturnStatus compileString(VM *vm, char *prog, bool verbose,
         addN(&vm->funcProtos[topScope.protoID], OP_RETURN_UNDEF,
              returnLine);
     }
-    patchGoStatements(vm, topScope);
+    if (patchGoStatements(vm, topScope) != LRS_OK) {
+        return LRS_COMPILETIME_ERROR;
+    }
+    runFunc(vm, topFrameID);
     freeArena(&arena);
-    Value ret = {V_FUNCTION};
-    ret.func = allocFunction(vm, topScope.protoID);
-    pushValue(vm, ret);
     return LRS_OK;
 }
 
-LispisReturnStatus compileFile(VM *vm, const char *path, bool verbose) {
+LispisReturnStatus doFile(VM *vm, const char *path, bool verbose) {
     FILE *file = fopen(path, "r");
     long int length;
     fseek(file, 0, SEEK_END);
@@ -1054,7 +1096,7 @@ LispisReturnStatus compileFile(VM *vm, const char *path, bool verbose) {
     prog[length] = 0;
     fread(prog, sizeof(char), length, file);
     fclose(file);
-    return compileString(vm, prog, verbose, path);
+    return doString(vm, prog, verbose, path);
 }
 
 
@@ -1073,9 +1115,9 @@ bool getUpvalue(VM *vm, Scope scope, Value variable, uint8 *upvalueIdx) {
         }
         if (!found) {
             if(currScope->parent &&
-               keyExists(currScope->parent->symToReg, variable)) {
+               keyExists(vm, currScope->parent->symToReg, variable)) {
                 found = true;
-                uint8 reg = get(currScope->parent->symToReg,
+                uint8 reg = get(vm, currScope->parent->symToReg,
                                 variable).regOrConstant;
                 retUpvalueIdx = size(&proto->upvalues);
                 add(&proto->upvalues,
@@ -1151,8 +1193,8 @@ void ASTSymbol::traverse(VM *vm) {
 }
 void ASTSymbol::emit(VM *vm, Scope scope) {
     Value k;
-    if (keyExists(scope.valueToConstantSlot, sym)) {
-        k = get(scope.valueToConstantSlot, sym);
+    if (keyExists(vm, scope.valueToConstantSlot, sym)) {
+        k = get(vm, scope.valueToConstantSlot, sym);
     } else {
         k = allocConstant(&vm->funcProtos[scope.protoID], sym);
         set(vm, scope.valueToConstantSlot, sym, k);
@@ -1180,11 +1222,11 @@ void ASTVariable::traverse(VM *vm) {
 };
 
 void ASTVariable::emit(VM *vm, Scope scope) {
-    if (!keyExists(scope.symToReg, symbol)) {
+    if (!keyExists(vm, scope.symToReg, symbol)) {
         set(vm, scope.symToReg, symbol,
             allocReg(&vm->funcProtos[scope.protoID], scope, true));
     }
-    Value reg = get(scope.symToReg, symbol);
+    Value reg = get(vm, scope.symToReg, symbol);
     if (reg.nonLocal) {
         uint8 upvalueIdx;
         if (getUpvalue(vm, scope, symbol, &upvalueIdx)) {
@@ -1194,8 +1236,8 @@ void ASTVariable::emit(VM *vm, Scope scope) {
         } else {
             // Global
             Value k;
-            if (keyExists(scope.valueToConstantSlot, symbol)) {
-                k = get(scope.valueToConstantSlot, symbol);
+            if (keyExists(vm, scope.valueToConstantSlot, symbol)) {
+                k = get(vm, scope.valueToConstantSlot, symbol);
             } else {
                 k = allocConstant(&vm->funcProtos[scope.protoID],
                                   symbol);
@@ -1213,14 +1255,14 @@ void ASTVariable::emit(VM *vm, Scope scope) {
 
 // Only (let var val) and arguments
 void ASTVariable::setRegister(VM *vm, Scope scope) {
-    //assert(!keyExists(scope.symToReg, symbol));
+    //assert(!keyExists(vm, scope.symToReg, symbol));
     set(vm, scope.symToReg, symbol,
         allocReg(&vm->funcProtos[scope.protoID], scope));
 }
 
 Value ASTVariable::getRegister(VM *vm, Scope scope) {
-    assert(keyExists(scope.symToReg, symbol));
-    return get(scope.symToReg, symbol);
+    assert(keyExists(vm, scope.symToReg, symbol));
+    return get(vm, scope.symToReg, symbol);
 }
 
 void ASTVariable::freeRegister(Scope scope) {
@@ -1302,7 +1344,7 @@ void ASTLambda::emit(VM *vm, Scope scope) {
     addRI(&vm->funcProtos[scope.protoID], OP_CREATE_FUNC, line,
           reg.regOrConstant,
           localProtoID);
-    patchGoStatements(vm, newScope);
+    assert(patchGoStatements(vm, newScope) == LRS_OK);
 }
 
 Value ASTLambda::getRegister(VM *vm, Scope scope) {
@@ -1362,8 +1404,8 @@ void ASTDouble::emit(VM *vm, Scope scope) {
     Value v{V_DOUBLE};
     v.doub = value;
     Value k;
-    if (keyExists(scope.valueToConstantSlot, v)) {
-        k = get(scope.valueToConstantSlot, v);
+    if (keyExists(vm, scope.valueToConstantSlot, v)) {
+        k = get(vm, scope.valueToConstantSlot, v);
     } else {
         k = allocConstant(&vm->funcProtos[scope.protoID], v);
         set(vm, scope.valueToConstantSlot, v, k);
@@ -1392,8 +1434,8 @@ void ASTBoolean::emit(VM *vm, Scope scope) {
     Value v{V_BOOLEAN};
     v.boolean = value;
     Value k;
-    if (keyExists(scope.valueToConstantSlot, v)) {
-        k = get(scope.valueToConstantSlot, v);
+    if (keyExists(vm, scope.valueToConstantSlot, v)) {
+        k = get(vm, scope.valueToConstantSlot, v);
     } else {
         k = allocConstant(&vm->funcProtos[scope.protoID], v);
         set(vm, scope.valueToConstantSlot, v, k);
@@ -1420,8 +1462,8 @@ void ASTString::traverse(VM *vm) {
 
 void ASTString::emit(VM *vm, Scope scope) {
     Value k;
-    if (keyExists(scope.valueToConstantSlot, value)) {
-        k = get(scope.valueToConstantSlot, value);
+    if (keyExists(vm, scope.valueToConstantSlot, value)) {
+        k = get(vm, scope.valueToConstantSlot, value);
     } else {
         k = allocConstant(&vm->funcProtos[scope.protoID], value);
         set(vm, scope.valueToConstantSlot, value, k);
@@ -1495,8 +1537,8 @@ void ASTDefine::traverse(VM *vm) {
 void ASTDefine::emit(VM *vm, Scope scope) {
     expr->emit(vm, scope);
     Value k;
-    if (keyExists(scope.valueToConstantSlot, var)) {
-        k = get(scope.valueToConstantSlot, var);
+    if (keyExists(vm, scope.valueToConstantSlot, var)) {
+        k = get(vm, scope.valueToConstantSlot, var);
     } else {
         k = allocConstant(&vm->funcProtos[scope.protoID], var);
         set(vm, scope.valueToConstantSlot, var, k);
@@ -1624,11 +1666,11 @@ void ASTSet::emit(VM *vm, Scope scope) {
     expr->emit(vm, scope);
     uint8 exprReg = expr->getRegister(vm, scope).regOrConstant;
 
-    if (!keyExists(scope.symToReg, var.symbol)) {
+    if (!keyExists(vm, scope.symToReg, var.symbol)) {
         set(vm, scope.symToReg, var.symbol,
             allocReg(&vm->funcProtos[scope.protoID], scope, true));
     }
-    Value varReg = get(scope.symToReg, var.symbol);
+    Value varReg = get(vm, scope.symToReg, var.symbol);
     if (varReg.nonLocal) {
         uint8 upvalueIdx;
         if (getUpvalue(vm, scope, var.symbol, &upvalueIdx)) {
@@ -1638,8 +1680,8 @@ void ASTSet::emit(VM *vm, Scope scope) {
         } else {
             // Global
             Value k;
-            if (keyExists(scope.valueToConstantSlot, var.symbol)) {
-                k = get(scope.valueToConstantSlot, var.symbol);
+            if (keyExists(vm, scope.valueToConstantSlot, var.symbol)) {
+                k = get(vm, scope.valueToConstantSlot, var.symbol);
             } else {
                 k = allocConstant(&vm->funcProtos[scope.protoID],
                                   var.symbol);
@@ -1790,7 +1832,7 @@ void ASTLabel::traverse(VM *vm) {
 };
 
 void ASTLabel::emit(VM *vm, Scope scope) {
-    assert(!keyExists(scope.labelPositions, labelSymbol));
+    assert(!keyExists(vm, scope.labelPositions, labelSymbol));
     Value codePos = {V_CODE_POSITION};
     codePos.codePosition = getPos(&vm->funcProtos[scope.protoID]);
     set(vm, scope.labelPositions, labelSymbol, codePos);

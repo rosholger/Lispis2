@@ -178,16 +178,7 @@ struct ActivationFrame {
     uint8 retReg = 0;
 };
 
-struct ObjectSlot;
-
-// Need a way to check if key is present
-// in this object and not its parent, codegen needs that.
-struct Object {
-    GCObject gcObj;
-    Object();
-    DynamicArray<ObjectSlot> slots;
-    Object *parent = 0;
-};
+struct Object;
 
 void clear(Object *obj);
 
@@ -197,30 +188,57 @@ struct Handle {
 
 struct LineInfo;
 
-struct VM {
-    DynamicArray<FunctionPrototype> funcProtos;
-    DynamicArray<Value> apiStack;
-    DynamicArray<ActivationFrame> frameStack;
-    size_t frameStackTop = 0;
-    size_t apiStackTop = 0;
-    size_t apiStackBottom = 0;
-    // Needs to be Value, since the compiler works with Values
-    DynamicArray<Value> handles;
-    Object globals;
-    Object macros;
-    Object symbolTable;
-    int symbolIdTop = 0;
-    int gensymIdTop = -1;
-    GC gc;
-    Upvalue *openUpvalueHead = 0;
-};
+struct VM;
 
 void free(VM *vm, Handle handle);
+
+enum LispisReturnStatus {
+    LRS_RETURN_ONE = 1,
+    LRS_RETURN_NONE = 0,
+    LRS_OK = 0,
+    LRS_COMPILETIME_ERROR = -1,
+    LRS_RUNTIME_ERROR = -2,
+    LRS_MACRO_ERROR = -3, // Compiletime and runtime
+    LRS_WRONG_NUMBER_OF_ARGUMENTS = -4,
+    LRS_WRONG_ARGUMENT_TYPE = -5,
+    LRS_C_FUNC_ERROR = -6,
+};
+
+// Example usage:
+// ASSERT_NUM_ARGS(numArgs == 2);
+// ASSERT_NUM_ARGS(numArgs > 2);
+#define ASSERT_NUM_ARGS(b)                              \
+    do {                                                \
+        if (!(b)) {                                     \
+            return LRS_WRONG_NUMBER_OF_ARGUMENTS;       \
+        }                                               \
+    } while(false)
+
+// Example usage:
+// ASSERT_ARG_TYPE(vm, -1, V_SYMBOL, "symbol");
+#define ASSERT_ARG_TYPE(vm, idx, t, typeStr)            \
+    do {                                                \
+        if (peek((vm), (idx)).type != (t)) {            \
+            pushString(vm, typeStr);                    \
+            return LRS_WRONG_ARGUMENT_TYPE;             \
+        }                                               \
+    } while(false)
+
+// Example usage:
+// ASSERT_EXPR(vm, p.pair, "car argument '()");
+#define ASSERT_EXPR(vm, expr, msg)                      \
+    do {                                                \
+        if (!(expr)) {                                  \
+            pushString(vm, msg);                        \
+            return LRS_C_FUNC_ERROR;                    \
+        }                                               \
+    } while(false)
+
 
 // WARNING: arguments are in reverse,
 // ie last argument is the top of the stack
 // Change from bool to int, so you can return an error.
-typedef bool (*CFunction)(VM *vm, size_t numArgs);
+typedef LispisReturnStatus (*CFunction)(VM *vm, size_t numArgs);
 
 struct ConsPair;
 
@@ -232,9 +250,7 @@ struct ConsPair;
   triggers a gc cycle then the pointer that get
   returned is invalidated and we get weird, imposible to
   debug crashes that look like gc bugs. 
-  ╔═╗╦ ╦╔═╗╦╔═  ╔╦╗╦ ╦╔═╗  ╔═╗╔╦╗╔═╗╔╗╔╔╦╗╔═╗╦═╗╔╦╗
-  ╠╣ ║ ║║  ╠╩╗   ║ ╠═╣║╣   ╚═╗ ║ ╠═╣║║║ ║║╠═╣╠╦╝ ║║
-  ╚  ╚═╝╚═╝╩ ╩   ╩ ╩ ╩╚═╝  ╚═╝ ╩ ╩ ╩╝╚╝═╩╝╩ ╩╩╚══╩╝
+  Fuck the standard!!
 */
 Value &get(VM *vm, Handle handle);
 ValueType type(VM *vm, Handle handle);
@@ -272,6 +288,38 @@ struct Value {
         size_t codePosition; // 8 bytes
     };
 };
+
+struct ObjectSlot;
+
+// Need a way to check if key is present
+// in this object and not its parent, codegen needs that.
+struct Object {
+    GCObject gcObj;
+    Object();
+    DynamicArray<ObjectSlot> slots;
+    Value parent;
+};
+
+struct VM {
+    DynamicArray<FunctionPrototype> funcProtos;
+    DynamicArray<Value> apiStack;
+    DynamicArray<ActivationFrame> frameStack;
+    size_t frameStackTop = 0;
+    size_t apiStackTop = 0;
+    size_t apiStackBottom = 0;
+    // Needs to be Value, since the compiler works with Values
+    DynamicArray<Value> handles;
+    // Change globals to a Value
+    Object globals;
+    Object macros;
+    Object symbolTable;
+    int symbolIdTop = 0;
+    int gensymIdTop = -1;
+    GC gc;
+    Upvalue *openUpvalueHead = 0;
+    Symbol parentSym;
+};
+
 
 struct LineInfo {
     GCObject gcObj;
@@ -312,11 +360,13 @@ void setLineInfo(VM *vm, Handle handle, size_t line, size_t column);
 void setLineInfo(VM *vm, Value value, size_t line, size_t column);
 Closure *allocFunction(VM *vm, size_t protoID);
 Upvalue *allocUpvalue(VM *vm);
+size_t allocFrame(VM *vm, Closure *func);
 
 void set(VM *vm, Object *o, Value key, Value value);
-Value &get(Object *o, Value key);
+Value &get(VM *vm, Object *o, Value key);
 Value &getFirstKey(Object *o, Value value);
-bool keyExists(Object *o, Value key);
+bool keyExists(VM *vm, Object *o, Value key);
+void remove(VM *vm, Object *o, Value key);
 
 void clearStack(VM *vm);
 
@@ -389,6 +439,7 @@ bool operator!=(Value a, Value b) {
 void freeVM(VM *vm);
 void getGlobal(VM *vm, Symbol variable);
 void setGlobal(VM *vm, Symbol variable);
+void setMacro(VM *vm, Symbol variable);
 
 // Can't exist (atleast not as public api), instead we need specific
 // different ones for different types, And Handle's for GCObject's
@@ -398,6 +449,7 @@ Value pop(VM *vm);
 bool popBoolean(VM *vm);
 double popDouble(VM *vm);
 Symbol popSymbol(VM *vm);
+char *popString(VM *vm);
 double peekDouble(VM *vm, int idx);
 char *peekString(VM *vm, int idx);
 void car(VM *vm);
@@ -405,6 +457,9 @@ void cdr(VM *vm);
 void cons(VM *vm);
 void dup(VM *vm);
 void swap(VM *vm);
+
+void setObjectSlot(VM *vm);
+void getObjectSlot(VM *vm);
 
 bool isEmptyList(VM *vm);
 bool isList(VM *vm);
@@ -422,7 +477,8 @@ void pushOpaque(VM *vm, void *opaque);
 void pushHandle(VM *vm, Handle handle);
 void pushCFunction(VM *vm, CFunction cfunc);
 void pushStackTrace(VM *vm);
-bool lispisList(VM *vm, size_t numArgs);
+void pushObject(VM *vm);
+LispisReturnStatus lispisList(VM *vm, size_t numArgs);
 
 // Should be internal
 void pushValue(VM *vm, Value v);
@@ -456,19 +512,6 @@ size_t length(Value v);
 
 #define getSImm(undecoded) (0x00000000FFFFFFFF & *((int32 *)&undecoded))
 
-enum LispisReturnStatus {
-    LRS_OK = 0,
-    LRS_COMPILETIME_ERROR = -1,
-    LRS_RUNTIME_ERROR = -2,
-    LRS_MACRO_ERROR = -3 // Compiletime and runtime
-};
-
-LispisReturnStatus doString(VM *vm, const char *prog, size_t numArgs = 0,
-                            bool verbose = true, const char *file = 0);
-
-LispisReturnStatus doFile(VM *vm, const char *path, size_t numArgs = 0,
-                          bool verbose = true);
-
 LispisReturnStatus call(VM *vm, uint8 numArgs);
 
 VM initVM(bool loadDefaults = true);
@@ -477,4 +520,13 @@ void printFuncProtoCode(VM *vm, FunctionPrototype *func);
 
 char *getSymbolString(VM *vm, Symbol symbol);
 
+bool hasLineInfo(Value value);
 LineInfo getLineInfo(Value value);
+LispisReturnStatus runFunc(VM *vm, size_t frameID);
+void resizeFrame(VM *vm, size_t frameID);
+
+LispisReturnStatus doString(VM *vm, const char *prog,
+                            bool verbose = true,
+                            const char *filePath = 0);
+
+LispisReturnStatus doFile(VM *vm, const char *path, bool verbose = true);

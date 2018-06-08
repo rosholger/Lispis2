@@ -239,21 +239,6 @@ struct ASTLet : ASTNode {
     virtual void freeRegister(Scope scope);
 };
 
-#if 0
-
-struct ASTFor : ASTNode {
-    ASTVariable var;
-    ASTNode *iterExpr;
-    ASTBody body;
-    ASTFor();
-    virtual void traverse(VM *vm);
-    virtual void emit(VM *vm, Scope scope);
-    virtual Value getRegister(VM *vm, Scope scope);
-    virtual void freeRegister(Scope scope);
-};
-
-#endif
-
 struct ASTSet : ASTNode {
     ASTVariable var;
     ASTNode *expr;
@@ -302,8 +287,3 @@ T *alloc(ArenaAllocator *arena) {
     return ret;
 }
 void freeArena(ArenaAllocator *arena);
-LispisReturnStatus compileString(VM *vm, char *prog,
-                                 bool verbose = false,
-                                 const char *filePath = 0);
-LispisReturnStatus compileFile(VM *vm, const char *path,
-                               bool verbose = false);

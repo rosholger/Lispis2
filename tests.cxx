@@ -95,10 +95,10 @@ public:
 
     void testBoolean() {
         VM vm;
-        doString(&vm, "true", 0, false);
+        doString(&vm, "true", false);
         bool ret = popBoolean(&vm);
         ETS_ASSERT(ret);
-        doString(&vm, "false", 0, false);
+        doString(&vm, "false", false);
         ret = popBoolean(&vm);
         ETS_ASSERT(!ret);
     }
@@ -108,22 +108,22 @@ public:
 
     void testDouble() {
         VM vm;
-        doString(&vm, "0", 0, false);
+        doString(&vm, "0", false);
         double ret = popDouble(&vm);
         ETS_ASSERT(COMP_DOUB(ret, 0));
-        doString(&vm, "1.0", 0, false);
+        doString(&vm, "1.0", false);
         ret = popDouble(&vm);
         ETS_ASSERT(COMP_DOUB(ret, 1.0));
-        doString(&vm, "2000.0", 0, false);
+        doString(&vm, "2000.0", false);
         ret = popDouble(&vm);
         ETS_ASSERT(COMP_DOUB(ret, 2000.0));
-        doString(&vm, "-2000.0", 0, false);
+        doString(&vm, "-2000.0", false);
         ret = popDouble(&vm);
         ETS_ASSERT(COMP_DOUB(ret, -2000.0));
-        doString(&vm, "-.0", 0, false);
+        doString(&vm, "-.0", false);
         ret = popDouble(&vm);
         ETS_ASSERT(COMP_DOUB(ret, 0));
-        doString(&vm, "-0.5", 0, false);
+        doString(&vm, "-0.5", false);
         ret = popDouble(&vm);
         ETS_ASSERT(COMP_DOUB(ret, -0.5));
     }
@@ -131,24 +131,24 @@ public:
     void testQuote() {
         VM vm;
         {
-            doString(&vm, "(quote a)", 0, false);
+            doString(&vm, "(quote a)", false);
             Symbol ret = popSymbol(&vm);
             ETS_ASSERT_EQUALS(ret, intern(&vm, "a"));
         }
         {
-            doString(&vm, "(quote true)", 0, false);
+            doString(&vm, "(quote true)", false);
             bool ret = popBoolean(&vm);
             ETS_ASSERT(ret);
         }
         {
-            doString(&vm, "(quote 0.5)", 0, false);
+            doString(&vm, "(quote 0.5)", false);
             double ret = popDouble(&vm);
             ETS_ASSERT(COMP_DOUB(ret, 0.5));
         }
 
         // Turn on when we can quote lists
         if (false) {
-            doString(&vm, "(quote (a b))", 0, false);
+            doString(&vm, "(quote (a b))", false);
             dup(&vm); // '(a b) '(a b)
             car(&vm); // '(a b) a
             Symbol a = popSymbol(&vm); // '(a b)
@@ -166,7 +166,7 @@ public:
     void testVararg() {
         VM vm = initVM(false);
         doString(&vm,
-                 "((lambda args ((lambda (arg) arg) args)) 1)", 0, false);
+                 "((lambda args ((lambda (arg) arg) args)) 1)", false);
         ETS_ASSERT(isList(&vm));
     }
 };

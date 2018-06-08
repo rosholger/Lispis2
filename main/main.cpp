@@ -7,23 +7,23 @@
 int main(int argc, char *argv[]) {
     assert(sizeof(Value) == sizeof(int *) * 2);
     VM vm = initVM();
-    switch (doFile(&vm, "./slot-access-sugar.lsp", 0, false)) {
-        case LRS_RUNTIME_ERROR: {
-            l_fprintf(stderr, "\nRUNTIME ERROR: in "
-                      "slot-access-sugar.lsp:\n");
-            printRuntimeError(&vm);
-            exit(1);
-        } break;
-        case LRS_MACRO_ERROR:
-        case LRS_COMPILETIME_ERROR: {
-            l_fprintf(stderr, "\nCOMPILETIME ERROR: in "
-                      "slot-access-sugar.lsp:\n");
-            printValue(&vm, pop(&vm), stderr);
-            exit(1);
-        } break;
-        default:break;
-    }
-    switch (doFile(&vm, "./basic.lsp", 0, false)) {
+    //switch (doFile(&vm, "./slot-access-sugar.lsp", 0, false)) {
+    //case LRS_RUNTIME_ERROR: {
+    //l_fprintf(stderr, "\nRUNTIME ERROR: in "
+    //"slot-access-sugar.lsp:\n");
+    //printRuntimeError(&vm);
+    //exit(1);
+    //} break;
+    //case LRS_MACRO_ERROR:
+    //case LRS_COMPILETIME_ERROR: {
+    //l_fprintf(stderr, "\nCOMPILETIME ERROR: in "
+    //"slot-access-sugar.lsp:\n");
+    //printValue(&vm, pop(&vm), stderr);
+    //exit(1);
+    //} break;
+    //default:break;
+    //}
+    switch (doFile(&vm, "./basic.lsp", false)) {
         case LRS_RUNTIME_ERROR: {
             l_fprintf(stderr, "\nRUNTIME ERROR: in basic.lsp:\n");
             printRuntimeError(&vm);

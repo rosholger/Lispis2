@@ -85,3 +85,6 @@ OPCODE(LOAD_NULL, R)
 
 OPCODE(CRASH, R)
 // The crashvalue to "return"
+
+OPCODE(NO_RET_RET, N)
+// Shit name

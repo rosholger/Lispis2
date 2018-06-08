@@ -14,6 +14,6 @@ with open(args.src, "r") as src, open(args.dst, "w") as dst:
         dst.write("\\n\"\n\"")
         line = src.readline()
     #dst.write(src.read().replace('\n', '\\n'))
-    dst.write("\",\n0, false, \"")
+    dst.write("\",\nfalse, \"")
     dst.write(args.src)
     dst.write("\");")

@@ -37,7 +37,7 @@ struct Token {
 };
 
 struct LexState {
-    char *prog;
+    const char *prog;
     size_t pos = 0;
     size_t line = 1;
     size_t column = 0;
@@ -48,6 +48,6 @@ void eatWhiteSpace(LexState *state);
 bool isFloatStartChar(int c);
 Token peekToken(LexState *state);
 Token nextToken(VM *vm, LexState *state);
-LispisReturnStatus initLexerState(VM *vm, char *prog, LexState *ret);
+LispisReturnStatus initLexerState(VM *vm, const char *prog, LexState *ret);
 
 LispisReturnStatus parseExpr(VM *vm, LexState *lex, Handle parent);

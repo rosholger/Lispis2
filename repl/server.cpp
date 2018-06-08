@@ -122,7 +122,7 @@ void repl() {
             if (strlen(expr) != 2 || expr[0] != ' ' || expr[1] != '\n') {
                 char *wrapped = wrapInScope(expr);
                 free(expr);
-                switch (doString(&vm, wrapped, 0, false, "repl")) {
+                switch (doString(&vm, wrapped, false, "repl")) {
                     case LRS_OK: {
                         printValue(&vm, pop(&vm));
                         l_fprintf(stdout, "\n");
@@ -136,6 +136,7 @@ void repl() {
                         l_fprintf(stderr, "\nCOMPILETIME ERROR:\n");
                         printValue(&vm, pop(&vm), stderr);
                     } break;
+                    default:assert(false);
                 }
                 free(wrapped);
             }

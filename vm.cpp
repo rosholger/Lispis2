@@ -57,25 +57,6 @@ Value at(Value v, size_t idx) {
     return ret.pair->car;
 }
 
-/******************************************************************
-*               ╔═╗╦ ╦╔═╗╦╔═  ╔═╗╔═╗╔═╗                           *
-*               ╠╣ ║ ║║  ╠╩╗  ║ ╦║  ║                             *
-*               ╚  ╚═╝╚═╝╩ ╩  ╚═╝╚═╝╚═╝                           *
-*               ╔═╗╦ ╦╔═╗╦╔═  ╔═╗╔╦╗╔╗                            *
-*               ╠╣ ║ ║║  ╠╩╗  ║ ╦ ║║╠╩╗                           *
-*               ╚  ╚═╝╚═╝╩ ╩  ╚═╝═╩╝╚═╝                           *
-*               ╔═╗╦ ╦╔═╗╦╔═  ╦  ╦╔═╗╦  ╔═╗╦═╗╦╔╗╔╔╦╗             *
-*               ╠╣ ║ ║║  ╠╩╗  ╚╗╔╝╠═╣║  ║ ╦╠╦╝║║║║ ║║             *
-*               ╚  ╚═╝╚═╝╩ ╩   ╚╝ ╩ ╩╩═╝╚═╝╩╚═╩╝╚╝═╩╝             *
-*               ╔═╗╦ ╦╔═╗╦╔═  ╔═╗╦  ╔═╗╔╗╔╔═╗                     *
-*               ╠╣ ║ ║║  ╠╩╗  ║  ║  ╠═╣║║║║ ╦                     *
-*               ╚  ╚═╝╚═╝╩ ╩  ╚═╝╩═╝╩ ╩╝╚╝╚═╝                     *
-*               ╦  ╦ ╦╔═╗╔╦╗╔═╗  ╦ ╦╔═╗╦ ╦  ╔═╗╦  ╦               *
-*               ║  ╠═╣╠═╣ ║ ║╣   ╚╦╝║ ║║ ║  ╠═╣║  ║               *
-*               ╩  ╩ ╩╩ ╩ ╩ ╚═╝   ╩ ╚═╝╚═╝  ╩ ╩╩═╝╩═╝             *
-******************************************************************/
-  
-
 
 GCObject *copyFromTo(VM *vm, GCObject *obj, size_t size) {
     assert(obj->type <= GC_BROKEN_HEART);
@@ -319,9 +300,9 @@ void collect(VM *vm) {
         visitValue(vm, &vm->macros.slots[i].key); // Might not be needed
         visitValue(vm, &vm->macros.slots[i].value);
     }
-    if (vm->globals.parent) {
-        l_fprintf(stderr, "The globals table can not yet have a parent :(\n");
-        assert(false);
+    if (vm->globals.parent.type == V_OBJECT &&
+        vm->globals.parent.object) {
+        visitValue(vm, &vm->globals.parent);
     }
     while(vm->gc.nextToExamine != vm->gc.nextFree) {
         GCObject *val = (GCObject *)(vm->gc.toSpace + vm->gc.nextToExamine);
@@ -544,8 +525,8 @@ static ObjectSlot *findEmptySlot(Object *o, size_t start) {
     return &o->slots[curr];
 }
 
-static void insertNewSlot(VM *vm, Object *o,
-                          Value key, Value value) {
+static ObjectSlot *insertNewSlot(VM *vm, Object *o,
+                                 Value key, Value value) {
     // WRONG!!! If we have insert three keys with same hash we get
     // resize spiral of death.
     // Should just be that one of them is in its main position
@@ -577,8 +558,7 @@ static void insertNewSlot(VM *vm, Object *o,
         ObjectSlot *freePos = findEmptySlot(o, mainIdx);
         if (!freePos) {
             resizeObject(vm, o, size(&o->slots)*2);
-            insertNewSlot(vm, o, key, value);
-            return;
+            return insertNewSlot(vm, o, key, value);
         }
         uint32_t collidingMainIdx =
             scaleHash(hashValue(o->slots[mainIdx].key),
@@ -586,6 +566,7 @@ static void insertNewSlot(VM *vm, Object *o,
         if (mainIdx == collidingMainIdx) {
             freePos->key = key;
             freePos->value = value;
+            return freePos;
         } else {
             if (o->slots[collidingMainIdx].key.type == V_UNDEF) {
                 // Correct
@@ -593,54 +574,61 @@ static void insertNewSlot(VM *vm, Object *o,
                 o->slots[collidingMainIdx] = o->slots[mainIdx];
                 o->slots[mainIdx].key = key;
                 o->slots[mainIdx].value = value;
+                return &o->slots[mainIdx];
             } else {
                 *freePos = o->slots[mainIdx];
                 o->slots[mainIdx].key = key;
                 o->slots[mainIdx].value = value;
+                return &o->slots[mainIdx];
             }
         }
     } else {
         // main slot free
         o->slots[mainIdx].key = key;
         o->slots[mainIdx].value = value;
+        return &o->slots[mainIdx];
     }
 }
 
 // WARNING!!! When we implement our own DynamicArray
 // we have to be carefull about this function returning a pointer.
-Value *getSlot(Object *o, Value key) {
+ObjectSlot *getSlot(VM *vm, Object *o, Value key,
+                    bool searchParents = true) {
     uint32 mainIdx = scaleHash(hashValue(key), size(&o->slots));
     uint32 currIdx = mainIdx;
     while (o->slots[currIdx].key != key) {
         if (nextIdx(currIdx) == mainIdx) {
-            if (o->parent) {
-                return getSlot(o->parent, key);
+            if (searchParents && o->parent.type == V_OBJECT &&
+                o->parent.object) {
+                return getSlot(vm, o->parent.object, key);
             } else {
                 return 0;
             }
         }
         if (o->slots[currIdx].key.type == V_UNDEF &&
-            o->slots[currIdx].key.boolean) {
+            !o->slots[currIdx].key.boolean) {
             // Not tombstone
-            if (o->parent) {
-                return getSlot(o->parent, key);
+            if (searchParents && o->parent.type == V_OBJECT &&
+                o->parent.object) {
+                return getSlot(vm, o->parent.object, key);
             } else {
                 return 0;
             }
         }
         currIdx = nextIdx(currIdx);
     }
-    return &o->slots[currIdx].value;
+    return &o->slots[currIdx];
 }
 
-void insertSlot(VM *vm, Object *o, Value key, Value value) {
+ObjectSlot *insertSlot(VM *vm, Object *o, Value key, Value value) {
     assert(key.type == V_STRING || key.type == V_SYMBOL ||
            key.type == V_DOUBLE || key.type == V_BOOLEAN);
-    Value *p = getSlot(o, key);
+    ObjectSlot *p = getSlot(vm, o, key, false);
     if (p) {
-        *p = value;
+        p->value = value;
+        return p;
     } else {
-        insertNewSlot(vm, o, key, value);
+        return insertNewSlot(vm, o, key, value);
     }
 }
 
@@ -661,18 +649,55 @@ static void resizeObject(VM *vm, Object *o, size_t newSize) {
 }
 
 void set(VM *vm, Object *o, Value key, Value value) {
+    //if (key.type == V_SYMBOL && key.sym == vm->parentSym) {
+    //assert(value.type == V_OBJECT);
+    //o->parent = value;
+    //}
+    assert(value.type != V_UNDEF);
     assert(size(&o->slots) > 0);
     insertSlot(vm, o, key, value);
 }
 
-Value &get(Object *o, Value key) {
-    Value *v = getSlot(o, key);
-    assert(v);
-    return *v;
+Value &get(VM *vm, Object *o, Value key) {
+    //if (key.type == V_SYMBOL && key.sym == vm->parentSym) {
+    //assert(o->parent.type == V_OBJECT && o->parent.object);
+    //return o->parent;
+    //}
+    ObjectSlot *v = getSlot(vm, o, key);
+    assert(v && v->value.type != V_UNDEF);
+    return v->value;
 }
 
-bool keyExists(Object *o, Value key) {
-    return getSlot(o, key);
+bool keyExists(VM *vm, Object *o, Value key) {
+    //if (key.type == V_SYMBOL && key.sym == vm->parentSym) {
+    //return (o->parent.type == V_OBJECT && o->parent.object);
+    //}
+    assert(o);
+    ObjectSlot *slot = getSlot(vm, o, key);
+    return slot && slot->value.type != V_UNDEF;
+}
+
+void remove(VM *vm, Object *o, Value key) {
+    assert(keyExists(vm, o, key));
+    //if (key.type == V_SYMBOL && key.sym == vm->parentSym) {
+    //o->parent.type = V_UNDEF;
+    //}
+    ObjectSlot *slot = getSlot(vm, o, key, false);
+    if (!slot) {
+        Value dummy = {V_UNDEF};
+        slot = insertSlot(vm, o, key, dummy);
+    } else {
+        if (o->parent.type == V_OBJECT) {
+            ObjectSlot *slotInParent = getSlot(vm, o->parent.object,
+                                               key);
+            if (slotInParent) {
+                slot->value.type = V_UNDEF;
+            } else {
+                slot->key.type = V_UNDEF;
+                slot->key.boolean = false;
+            }
+        }
+    }
 }
 
 void clearStack(VM *vm) {
@@ -696,7 +721,7 @@ void freeVM(VM *vm) {
 void getGlobal(VM *vm, Symbol variable) {
     Value v = {V_SYMBOL};
     v.sym = variable;
-    pushValue(vm, get(&vm->globals, v));
+    pushValue(vm, get(vm, &vm->globals, v));
 }
 
 void setGlobal(VM *vm, Symbol variable) {
@@ -704,6 +729,13 @@ void setGlobal(VM *vm, Symbol variable) {
     Value v = {V_SYMBOL};
     v.sym = variable;
     set(vm, &vm->globals, v, value);
+}
+
+void setMacro(VM *vm, Symbol variable) {
+    Value value = pop(vm);
+    Value v = {V_SYMBOL};
+    v.sym = variable;
+    set(vm, &vm->macros, v, value);
 }
 
 Value peek(VM *vm, int idx) {
@@ -747,6 +779,13 @@ char *peekString(VM *vm, int idx) {
     return ret.str;
 }
 
+char *popString(VM *vm) {
+    Value ret = pop(vm);
+    assert(ret.type == V_STRING);
+    return ret.str;
+}
+
+
 Symbol popSymbol(VM *vm) {
     Value ret = pop(vm);
     assert(ret.type == V_SYMBOL);
@@ -787,6 +826,31 @@ void swap(VM *vm) {
     Value b = pop(vm);
     pushValue(vm, a);
     pushValue(vm, b);
+}
+
+void setObjectSlot(VM *vm) {
+    Value value = pop(vm);
+    Value key = pop(vm);
+    Value obj = peek(vm, -1);
+    if (key.sym == vm->parentSym) {
+        assert(value.type == V_OBJECT && value.object);
+        obj.object->parent = value;
+    } else {
+        set(vm, obj.object, key, value);
+    }
+}
+
+void getObjectSlot(VM *vm) {
+    Value key = pop(vm);
+    Value obj = pop(vm);
+    assert(obj.object);
+    if (key.sym == vm->parentSym) {
+        assert(obj.object->parent.type == V_OBJECT &&
+               obj.object->parent.object);
+        pushValue(vm, obj.object->parent);
+        return;
+    }
+    pushValue(vm, get(vm, obj.object, key));
 }
 
 bool isEmptyList(VM *vm) {
@@ -878,13 +942,19 @@ void pushHandle(VM *vm, Handle handle) {
     pushValue(vm, get(vm, handle));
 }
 
+void pushObject(VM *vm) {
+    Value o = {V_OBJECT};
+    o.object = allocObject(vm);
+    pushValue(vm, o);
+}
+
 Symbol intern(VM *vm, const char *str) {
     Value vStr{V_STRING};
     // unsafe, so take care
     vStr.str = (char *)str;
     Symbol symbol;
-    if (keyExists(&vm->symbolTable, vStr)) {
-        symbol = get(&vm->symbolTable, vStr).sym;
+    if (keyExists(vm, &vm->symbolTable, vStr)) {
+        symbol = get(vm, &vm->symbolTable, vStr).sym;
     } else {
         // WARNING!! Leaking!!
         Value s = vStr;
@@ -1041,10 +1111,14 @@ void printValue(VM *vm, Value v, FILE *file) {
 }
 
 void printObject(VM *vm, Object *obj, FILE *file) {
-    l_fprintf(file, "{(*pointer* %p)", obj);
+    l_fprintf(file, "{");
     for (size_t i = 0; i < size(&obj->slots); ++i) {
-        if (obj->slots[i].key.type != V_UNDEF) {
-            l_fprintf(file, " (");
+        if (obj->slots[i].key.type != V_UNDEF &&
+            obj->slots[i].value.type != V_UNDEF) {
+            if (i != 0) {
+                l_fprintf(file, " ");
+            }
+            l_fprintf(file, "(");
             printValue(vm, obj->slots[i].key, file);
             l_fprintf(file, " ");
             printValue(vm, obj->slots[i].value, file);
@@ -1128,6 +1202,11 @@ void printFuncProtoCode(VM *vm, FunctionPrototype *func) {
     }
 }
 
+void resizeFrame(VM *vm, size_t frameID) {
+    resize(&vm->frameStack[frameID-1].registers,
+           getProto(vm, &vm->frameStack[frameID-1])->numRegs);
+}
+
 size_t allocFrame(VM *vm, Closure *func) {
     ActivationFrame *frame;
     if (vm->frameStackTop < size(&vm->frameStack)) {
@@ -1140,7 +1219,7 @@ size_t allocFrame(VM *vm, Closure *func) {
     vm->frameStackTop++;
     *frame = ActivationFrame();
     frame->func = func; // Might this break?? or not??
-    resize(&frame->registers, getProto(vm, frame)->numRegs);
+    resizeFrame(vm, vm->frameStackTop);
     return vm->frameStackTop;
 }
 
@@ -1150,7 +1229,7 @@ void popFrame(VM *vm) {
 }
 
 void closeAllUpvalues(VM *vm, ActivationFrame *frame) {
-    if (vm->openUpvalueHead) {
+    if (vm->openUpvalueHead && size(&frame->registers)) {
         void *start = &frame->registers[0];
         void *end = (&frame->registers[size(&frame->registers)-1])+1;
         while (vm->openUpvalueHead &&
@@ -1228,27 +1307,8 @@ bool correctNumberOfArgs(VM *vm, ActivationFrame *frame, uint8 numArgs) {
     return true;
 }
 
+LispisReturnStatus lispisSetSlot(VM *vm, size_t numArgs);
 LispisReturnStatus runFunc(VM *vm, size_t frameID) {
-
-#define POP_ALL_LISPIS_FRAMES()                                         \
-    do {                                                                \
-        while (!frame->calledFromCpp) {                                 \
-            frameID -= 1;                                               \
-            ActivationFrame *caller = &vm->frameStack[frameID-1];       \
-            frame = caller;                                             \
-            popFrame(vm);                                               \
-        }                                                               \
-    } while (false)
-
-#define CRASH_LISPIS()                          \
-    do {                                        \
-        pushStackTrace(vm);                     \
-        pushNull(vm);                           \
-        cons(vm);                               \
-        cons(vm);                               \
-        POP_ALL_LISPIS_FRAMES();                \
-        return LRS_RUNTIME_ERROR;               \
-    } while (false)
 
     OpCode undecoded;
     ActivationFrame *frame = &vm->frameStack[frameID-1];
@@ -1291,7 +1351,7 @@ LispisReturnStatus runFunc(VM *vm, size_t frameID) {
                 pushValue(vm, callee);
                 pushString(vm, " since its not a procedure");
                 lispisList(vm, 3);
-                CRASH_LISPIS();
+                goto fail;
             }
         } break;
         case OP_RETURN: {
@@ -1379,10 +1439,15 @@ LispisReturnStatus runFunc(VM *vm, size_t frameID) {
                 pushValue(vm, key);
                 pushString(vm, " is not a symbol");
                 lispisList(vm, 3);
-                CRASH_LISPIS();
+                goto fail;
             }
             Value val = frame->registers[valReg];
-            set(vm, obj.object, key, val);
+            pushValue(vm, obj);
+            pushValue(vm, key);
+            pushValue(vm, val);
+            lispisSetSlot(vm, 3);
+            pop(vm);
+            //set(vm, obj.object, key, val);
             frame->pc++;
         } break;
         case OP_DEFINE_GLOBAL: {
@@ -1404,16 +1469,16 @@ LispisReturnStatus runFunc(VM *vm, size_t frameID) {
                 l_fprintf(stderr, "ICE: GET_GLOBAL imm not a symbol\n");
                 assert(false);
             }
-            if (!keyExists(&vm->globals,
+            if (!keyExists(vm, &vm->globals,
                            getProto(vm, frame)->constants[k])) {
                 pushString(vm, "Global ");
                 pushValue(vm, getProto(vm, frame)->constants[k]);
                 pushString(vm, " does not exist");
                 lispisList(vm, 3);
-                CRASH_LISPIS();
+                goto fail;
             }
 
-            frame->registers[reg] = get(&vm->globals,
+            frame->registers[reg] = get(vm, &vm->globals,
                                         getProto(vm, frame)->constants[k]);
             frame->pc++;
         } break;
@@ -1424,13 +1489,13 @@ LispisReturnStatus runFunc(VM *vm, size_t frameID) {
                 l_fprintf(stderr, "ICE: GET_GLOBAL imm not a symbol\n");
                 assert(false);
             }
-            if (!keyExists(&vm->globals,
+            if (!keyExists(vm, &vm->globals,
                            getProto(vm, frame)->constants[k])) {
                 pushString(vm, "Global ");
                 pushValue(vm, getProto(vm, frame)->constants[k]);
                 pushString(vm, " does not exist");
                 lispisList(vm, 3);
-                CRASH_LISPIS();
+                goto fail;
             }
 
             set(vm, &vm->globals, getProto(vm, frame)->constants[k],
@@ -1480,7 +1545,10 @@ LispisReturnStatus runFunc(VM *vm, size_t frameID) {
         case OP_CRASH: {
             uint8 reg = getRegA(undecoded);
             pushValue(vm, frame->registers[reg]);
-            CRASH_LISPIS();
+            goto fail;
+        } break;
+        case OP_NO_RET_RET: {
+            return LRS_OK;
         } break;
         default: {
             l_fprintf(stdout, "OP: ");
@@ -1526,7 +1594,7 @@ LispisReturnStatus runFunc(VM *vm, size_t frameID) {
                     lispisList(vm, 5);
                     closeAllUpvalues(vm, calleeFrame);
                     popFrame(vm);
-                    CRASH_LISPIS();
+                    goto fail;
                 }
                 free(vm, value);
                 dstReg++;
@@ -1549,7 +1617,7 @@ LispisReturnStatus runFunc(VM *vm, size_t frameID) {
                     lispisList(vm, 6);
                     closeAllUpvalues(vm, calleeFrame);
                     popFrame(vm);
-                    CRASH_LISPIS();
+                    goto fail;
                 }
                 goto loop;
             } break;
@@ -1584,10 +1652,35 @@ LispisReturnStatus runFunc(VM *vm, size_t frameID) {
             } break;
             case OP_CALL: {
                 uint8 retReg = getRegA(undecoded);
-                if (callee.cfunc(vm, numArgs)) {
-                    frame->registers[retReg] = pop(vm);
-                } else {
-                    frame->registers[retReg].type = V_UNDEF;
+                LispisReturnStatus lrs = callee.cfunc(vm, numArgs);
+                switch(lrs) {
+                    case LRS_RETURN_ONE: {
+                        frame->registers[retReg] = pop(vm);
+                    } break;
+                    case LRS_RETURN_NONE: {
+                        frame->registers[retReg].type = V_UNDEF;
+                    } break;
+                    case LRS_WRONG_NUMBER_OF_ARGUMENTS: {
+                        pushString(vm, "Not correct amount of arguments!"
+                                   " Given ");
+                        pushDouble(vm, numArgs);
+                        asInt(vm);
+                        lispisList(vm, 2);
+                        goto fail;
+                    } break;
+                    case LRS_WRONG_ARGUMENT_TYPE: {
+                        Value typeStr = pop(vm);
+                        pushString(vm,
+                                   "Wrong argument type, expected ");
+                        pushValue(vm, typeStr);
+                        lispisList(vm, 2);
+                        goto fail;
+                    } break;
+                    case LRS_C_FUNC_ERROR: {
+                        lispisList(vm, 1);
+                        goto fail;
+                    }
+                    default:return lrs;
                 }
                 vm->apiStackBottom = apiStackBottom;
                 vm->apiStackTop = apiStackTop;
@@ -1609,13 +1702,38 @@ LispisReturnStatus runFunc(VM *vm, size_t frameID) {
         }
         goto cpushArgLoop;
     }
-    // Good citizen
-#undef POP_ALL_LISPIS_FRAMES
-#undef CRASH_LISPIS
+ fail:
+    pushStackTrace(vm);
+    pushNull(vm);
+    cons(vm);
+    cons(vm);
+    while (!frame->calledFromCpp) {
+        frameID -= 1;
+        ActivationFrame *caller = &vm->frameStack[frameID-1];
+        frame = caller;
+        popFrame(vm);
+    }
+    return LRS_RUNTIME_ERROR;
 }
 
 LispisReturnStatus call(VM *vm, uint8 numArgs) {
     Value callee = pop(vm);
+    if (callee.type == V_CFUNCTION) {
+        size_t apiStackBottom = vm->apiStackBottom;
+        vm->apiStackBottom = vm->apiStackTop - numArgs;
+        size_t apiStackTop = vm->apiStackTop - numArgs;
+        if (callee.cfunc(vm, numArgs)) {
+            Value ret = pop(vm);
+            vm->apiStackBottom = apiStackBottom;
+            vm->apiStackTop = apiStackTop;
+            pushValue(vm, ret);
+        } else {
+            vm->apiStackBottom = apiStackBottom;
+            vm->apiStackTop = apiStackTop;
+            pushUndef(vm);
+        }
+        return LRS_OK;
+    }
     assert(callee.type == V_FUNCTION);
     size_t frameID = allocFrame(vm, callee.func);
     ActivationFrame *frame = &vm->frameStack[frameID-1];
@@ -1645,78 +1763,56 @@ LispisReturnStatus call(VM *vm, uint8 numArgs) {
     return runFunc(vm, frameID);
 }
 
-LispisReturnStatus doString(VM *vm, const char *prog,
-                            size_t numArgs, bool verbose,
-              const char *file) {
-    LispisReturnStatus lrs = 
-        compileString(vm, (char *)prog, verbose, file);
-    if (lrs != LRS_OK) {
-        return lrs;
-    }
-    return call(vm, numArgs);
-}
-
-LispisReturnStatus doFile(VM *vm, const char *path, size_t numArgs,
-                          bool verbose) {
-    LispisReturnStatus lrs = compileFile(vm, path, verbose);
-    if (lrs != LRS_OK) {
-        return lrs;
-    }
-    if (verbose) {
-        for (size_t i = 0; i < size(&vm->funcProtos); ++i) {
-            l_fprintf(stdout, "\nFunction %lu:\n", i);
-            printFuncProtoCode(vm, &vm->funcProtos[i]);
-        }
-    }
-    return call(vm, numArgs);
-}
-
-bool lispisLT(VM *vm, size_t numArgs) {
+LispisReturnStatus lispisLT(VM *vm, size_t numArgs) {
     if (numArgs < 1) {
         pushBoolean(vm, false);
-        return true;
+        return LRS_RETURN_ONE;
     } else {
+        ASSERT_ARG_TYPE(vm, -1, V_DOUBLE, "double");
         double prev = popDouble(vm);
         numArgs--;
         while (numArgs) {
+            ASSERT_ARG_TYPE(vm, -1, V_DOUBLE, "double");
             double curr = popDouble(vm);
             if (prev < curr) {
                 pushBoolean(vm, false);
-                return true;
+                return LRS_RETURN_ONE;
             }
             prev = curr;
             numArgs--;
         }
         pushBoolean(vm, true);
-        return true;
+        return LRS_RETURN_ONE;
     }
 }
 
-bool lispisGT(VM *vm, size_t numArgs) {
+LispisReturnStatus lispisGT(VM *vm, size_t numArgs) {
     if (numArgs < 1) {
         pushBoolean(vm, false);
-        return true;
+        return LRS_RETURN_ONE;
     } else {
+        ASSERT_ARG_TYPE(vm, -1, V_DOUBLE, "double");
         double prev = popDouble(vm);
         numArgs--;
         while (numArgs) {
+            ASSERT_ARG_TYPE(vm, -1, V_DOUBLE, "double");
             double curr = popDouble(vm);
             if (prev > curr) {
                 pushBoolean(vm, false);
-                return true;
+                return LRS_RETURN_ONE;
             }
             prev = curr;
             numArgs--;
         }
         pushBoolean(vm, true);
-        return true;
+        return LRS_RETURN_ONE;
     }
 }
 
-bool lispisEQ(VM *vm, size_t numArgs) {
+LispisReturnStatus lispisEQ(VM *vm, size_t numArgs) {
     if (numArgs < 1) {
         pushBoolean(vm, true);
-        return true;
+        return LRS_RETURN_ONE;
     } else {
         bool ret = true;
         Value last = pop(vm);
@@ -1726,11 +1822,11 @@ bool lispisEQ(VM *vm, size_t numArgs) {
             numArgs--;
         }
         pushBoolean(vm, ret);
-        return true;
+        return LRS_RETURN_ONE;
     }
 }
 
-bool lispisList(VM *vm, size_t numArgs) {
+LispisReturnStatus lispisList(VM *vm, size_t numArgs) {
     Value nil = {V_CONS_PAIR};
     nil.pair = 0;
     if (numArgs > 0) {
@@ -1753,81 +1849,73 @@ bool lispisList(VM *vm, size_t numArgs) {
     } else {
         pushValue(vm, nil);
     }
-    return true;
+    return LRS_RETURN_ONE;
 }
 
-bool lispisCons(VM *vm, size_t numArgs) {
-    assert(numArgs == 2);
+LispisReturnStatus lispisCons(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 2);
     cons(vm);
-    return true;
+    return LRS_RETURN_ONE;
 }
 
-bool lispisCar(VM *vm, size_t numArgs) {
-    assert(numArgs == 1);
+LispisReturnStatus lispisCar(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 1);
+    ASSERT_ARG_TYPE(vm, -1, V_CONS_PAIR, "cons-pair");
     Value p = pop(vm);
-    if (p.type != V_CONS_PAIR) {
-        l_fprintf(stderr, "ERROR: car argument not a cons pair\n");
-        assert(false);
-    }
-    if (!p.pair) {
-        l_fprintf(stderr, "ERROR: car argument '()\n");
-        assert(false);
-    }
+    ASSERT_EXPR(vm, p.pair, "car argument '()");
     pushValue(vm, p.pair->car);
-    return true;
+    return LRS_RETURN_ONE;
 }
 
-bool lispisCdr(VM *vm, size_t numArgs) {
-    assert(numArgs == 1);
+LispisReturnStatus lispisCdr(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 1);
+    ASSERT_ARG_TYPE(vm, -1, V_CONS_PAIR, "cons-pair");
     Value p = pop(vm);
-    if (p.type != V_CONS_PAIR) {
-        l_fprintf(stderr, "ERROR: cdr argument not a cons pair\n");
-        assert(false);
-    }
-    if (!p.pair) {
-        l_fprintf(stderr, "ERROR: cdr argument '()\n");
-        assert(false);
-    }
+    ASSERT_EXPR(vm, p.pair, "cdr argument '()");
     pushValue(vm, p.pair->cdr);
-    return true;
+    return LRS_RETURN_ONE;
 }
 
-bool lispisNullP(VM *vm, size_t numArgs) {
-    assert(numArgs == 1);
+LispisReturnStatus lispisNullP(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 1);
     Value arg = pop(vm);
     pushBoolean(vm, arg.type == V_CONS_PAIR && !arg.pair);
-    return true;
+    return LRS_RETURN_ONE;
 }
 
-bool lispisListP(VM *vm, size_t numArgs) {
-    assert(numArgs == 1);
+LispisReturnStatus lispisListP(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 1);
     Value arg = pop(vm);
     pushBoolean(vm, arg.type == V_CONS_PAIR);
-    return true;
+    return LRS_RETURN_ONE;
 }
 
-bool lispisNot(VM *vm, size_t numArgs) {
-    assert(numArgs == 1);
+LispisReturnStatus lispisNot(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 1);
+    ASSERT_ARG_TYPE(vm, -1, V_BOOLEAN, "boolean");
     pushBoolean(vm, !popBoolean(vm));
-    return true;
+    return LRS_RETURN_ONE;
 }
 
-bool lispisAdd(VM *vm, size_t numArgs) {
+LispisReturnStatus lispisAdd(VM *vm, size_t numArgs) {
     double ret = 0;
     while (numArgs) {
+        ASSERT_ARG_TYPE(vm, -1, V_DOUBLE, "double");
         ret += popDouble(vm);
         numArgs--;
     }
     pushDouble(vm, ret);
-    return true;
+    return LRS_RETURN_ONE;
 }
 
-bool lispisSub(VM *vm, size_t numArgs) {
-    assert(numArgs > 0);
+LispisReturnStatus lispisSub(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs > 0);
+    ASSERT_ARG_TYPE(vm, -1, V_DOUBLE, "double");
     double ret = peekDouble(vm, -numArgs);
     numArgs--;
     if (numArgs) {
         while (numArgs) {
+            ASSERT_ARG_TYPE(vm, -1, V_DOUBLE, "double");
             ret -= peekDouble(vm, -numArgs);
             numArgs--;
         }
@@ -1835,59 +1923,116 @@ bool lispisSub(VM *vm, size_t numArgs) {
         ret = -ret;
     }
     pushDouble(vm, ret);
-    return true;
+    return LRS_RETURN_ONE;
 }
 
-bool lispisGetSlot(VM *vm, size_t numArgs) {
-    assert(numArgs == 2);
-    Value key = pop(vm);
-    Value obj = pop(vm);
-    switch (obj.type) {
+LispisReturnStatus lispisGetSlot(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 2);
+    switch (peek(vm, -2).type) {
         case V_OBJECT: {
-            pushValue(vm, get(obj.object, key));
+            Value key = peek(vm, -1);
+            Value obj = peek(vm, -2);
+            if (key.sym == vm->parentSym) {
+                ASSERT_EXPR(vm, (obj.object->parent.type == V_OBJECT &&
+                                 obj.object->parent.object),
+                            "object does not have a parent");
+            } else {
+                ASSERT_EXPR(vm, keyExists(vm, obj.object, key),
+                            "key does not exist");
+            }
+            getObjectSlot(vm);
         } break;
         case V_CONS_PAIR: {
-            assert(key.type == V_DOUBLE);
+            Value key = peek(vm, -1);
+            Value obj = peek(vm, -2);
+            ASSERT_EXPR(vm, key.type == V_DOUBLE,
+                        "get-slot key of cons-pair not double (bad msg)");
             pushValue(vm, at(obj, key.doub));
         } break;
-        default:assert(false);
+        default: {
+            ASSERT_EXPR(vm, false,
+                        "expected obj of type object or cons-pair");
+        }
     }
-    return true;
+    return LRS_RETURN_ONE;
 }
 
-bool lispisSetSlot(VM *vm, size_t numArgs) {
-    assert(numArgs == 3);
-    Value value = pop(vm);
-    Value key = pop(vm);
-    Value obj = pop(vm);
-    switch (obj.type) {
+LispisReturnStatus lispisSetSlot(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 3);
+    ASSERT_ARG_TYPE(vm, -2, V_SYMBOL, "symbol");
+    switch (peek(vm, -3).type) {
         case V_OBJECT: {
-            set(vm, obj.object, key, value);
+            Value value = peek(vm, -1);
+            Value key = peek(vm, -2);
+            if (key.sym == vm->parentSym) {
+                ASSERT_EXPR(vm, (value.type == V_OBJECT && value.object),
+                            "can only set objects as parent");
+            }
+            setObjectSlot(vm);
+            pop(vm);
             pushValue(vm, value);
         } break;
-        default:assert(false);
+        default: {
+            ASSERT_EXPR(vm, false,
+                        "expected obj of type object");
+        }
     }
-    return true;
+    return LRS_RETURN_ONE;
 }
 
-bool lispisPrint(VM *vm, size_t numArgs) {
+LispisReturnStatus lispisRemoveSlot(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 2);
+    ASSERT_ARG_TYPE(vm, -1, V_SYMBOL, "symbol");
+    Value key = pop(vm);
+    ASSERT_ARG_TYPE(vm, -1, V_OBJECT, "object");
+    Value obj = pop(vm);
+    if (key.sym == vm->parentSym) {
+        ASSERT_EXPR(vm, (obj.object->parent.type == V_OBJECT &&
+                         obj.object->parent.object),
+                    "object does not have a parent");
+        pushValue(vm, obj.object->parent);
+        obj.object->parent.type = V_UNDEF;
+    } else {
+        ASSERT_EXPR(vm, keyExists(vm, obj.object, key),
+                    "key does not exist");
+        pushValue(vm, get(vm, obj.object, key));
+        remove(vm, obj.object, key);
+    }
+    return LRS_RETURN_ONE;
+}
+
+LispisReturnStatus lispisKeyExists(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 2);
+    ASSERT_ARG_TYPE(vm, -1, V_SYMBOL, "symbol");
+    Value key = pop(vm);
+    ASSERT_ARG_TYPE(vm, -1, V_OBJECT, "object");
+    Value obj = pop(vm);
+    if (key.sym == vm->parentSym) {
+        pushBoolean(vm, obj.object->parent.type == V_OBJECT);
+    } else {
+        pushBoolean(vm, keyExists(vm, obj.object, key));
+    }
+    return LRS_RETURN_ONE;
+}
+
+LispisReturnStatus lispisPrint(VM *vm, size_t numArgs) {
     while (numArgs) {
         printValue(vm, peek(vm, -numArgs));
         numArgs--;
     }
-    return false;
+    return LRS_RETURN_NONE;
 }
 
-bool lispisPrintln(VM *vm, size_t numArgs) {
+LispisReturnStatus lispisPrintln(VM *vm, size_t numArgs) {
     lispisPrint(vm, numArgs);
     l_fprintf(stdout, "\n");
-    return false;
+    return LRS_RETURN_NONE;
 }
 
-bool lispisNewline(VM *vm, size_t numArgs) {
-    assert(numArgs == 0);
+LispisReturnStatus lispisNewline(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 0);
     pushString(vm, "\n");
-    return true;
+    return LRS_RETURN_ONE;
 }
 
 Symbol gensym(VM *vm) {
@@ -1896,33 +2041,30 @@ Symbol gensym(VM *vm) {
     return ret;
 }
 
-bool lispisGensym(VM *vm, size_t numArgs) {
-    assert(numArgs == 0);
-    Symbol ret = gensym(vm);
-    pushSymbol(vm, ret);
-    return true;
+LispisReturnStatus lispisGensym(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 0);
+    pushSymbol(vm, gensym(vm));
+    return LRS_RETURN_ONE;
 }
 
-bool lispisSetCdr(VM *vm, size_t numArgs) {
-    assert(numArgs == 2);
+LispisReturnStatus lispisSetCdr(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 2);
     Handle newCdr = reserve(vm, pop(vm));
+    ASSERT_ARG_TYPE(vm, -1, V_CONS_PAIR, "cons-pair");
     Handle pair = reserve(vm, pop(vm));
-    assert(get(vm, pair).pair);
+    ASSERT_EXPR(vm, get(vm, pair).pair, "Cant set cdr on '()");
     get(vm, pair).pair->cdr = get(vm, newCdr);
     free(vm, newCdr);
     free(vm, pair);
-    return false;
+    return LRS_RETURN_NONE;
 }
 
-bool lispisStackInfo(VM *vm, size_t numArgs) {
-    size_t frameNumber = 0;
-    if (numArgs == 1) {
-        assert(isDouble(vm));
-        frameNumber = popDouble(vm);
-    } else {
-        assert(false);
-    }
-    assert(vm->frameStackTop > frameNumber);
+LispisReturnStatus lispisStackInfo(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 1);
+    ASSERT_ARG_TYPE(vm, -1, V_DOUBLE, "double");
+    size_t frameNumber = popDouble(vm);
+    ASSERT_EXPR(vm, vm->frameStackTop > frameNumber,
+                "argument not in range of valid stack-frames");
     ActivationFrame *frame = &vm->frameStack[vm->frameStackTop -
                                              frameNumber - 1];
     size_t defLine =
@@ -1942,14 +2084,14 @@ bool lispisStackInfo(VM *vm, size_t numArgs) {
     cons(vm);
     cons(vm);
     cons(vm);
-    return true;
+    return LRS_RETURN_ONE;
 }
 
 // Garbage if called from C
-bool lispisStackDepth(VM *vm, size_t numArgs) {
-    assert(numArgs == 0);
+LispisReturnStatus lispisStackDepth(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 0);
     pushDouble(vm, vm->frameStackTop);
-    return true;
+    return LRS_RETURN_ONE;
 }
 
 // How to deal with C functions in the stack?
@@ -1969,35 +2111,39 @@ void pushStackTrace(VM *vm) {
     }
 }
 
-bool lispisStackTrace(VM *vm, size_t numArgs) {
-    assert(numArgs == 0);
+LispisReturnStatus lispisStackTrace(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 0);
     pushStackTrace(vm);
-    return true;
+    return LRS_RETURN_ONE;
 }
 
-bool lispisAsInt(VM *vm, size_t numArgs) {
-    assert(numArgs == 1);
+LispisReturnStatus lispisAsInt(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 1);
     asInt(vm);
-    return true;
+    return LRS_RETURN_ONE;
 }
 
-bool lispisPrintStackTrace(VM *vm, size_t numArgs) {
-    assert(numArgs == 1);
+LispisReturnStatus lispisPrintStackTrace(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 1);
     printStackTrace(vm);
-    return false;
+    return LRS_RETURN_NONE;
 }
 
-bool lispisDoFile(VM *vm, size_t numArgs) {
-    assert(numArgs > 0);
-    char *file = peekString(vm, -numArgs);
-    LispisReturnStatus lrs = doFile(vm, file, numArgs-1, false);
-    assert(lrs == LRS_OK);
-    return true;
+LispisReturnStatus lispisDoFile(VM *vm, size_t numArgs) {
+    ASSERT_NUM_ARGS(numArgs == 1);
+    ASSERT_ARG_TYPE(vm, -1, V_STRING, "string");
+    char *file = popString(vm);
+    LispisReturnStatus lrs = doFile(vm, file, false);
+    if (lrs != LRS_OK) {
+        return lrs;
+    }
+    return LRS_RETURN_ONE;
 }
 
 VM initVM(bool loadDefaults) {
     VM vm;
     vm.funcProtos = DynamicArray<FunctionPrototype>();
+    vm.parentSym = intern(&vm, "*parent*");
     if (loadDefaults) {
         //pushCFunction(&vm, lispisAnd);
         //setGlobal(&vm, intern(&vm, "and"));
@@ -2033,6 +2179,10 @@ VM initVM(bool loadDefaults) {
         setGlobal(&vm, intern(&vm, "get-slot"));
         pushCFunction(&vm, lispisSetSlot);
         setGlobal(&vm, intern(&vm, "set-slot!"));
+        pushCFunction(&vm, lispisRemoveSlot);
+        setGlobal(&vm, intern(&vm, "remove-slot!"));
+        pushCFunction(&vm, lispisKeyExists);
+        setGlobal(&vm, intern(&vm, "key-exists?"));
         pushCFunction(&vm, lispisPrint);
         setGlobal(&vm, intern(&vm, "print!"));
         pushCFunction(&vm, lispisPrintln);
@@ -2064,8 +2214,8 @@ Value &getFirstKey(Object *o, Value value) {
             return o->slots[i].key;
         }
     }
-    if (o->parent) {
-        return getFirstKey(o->parent, value);
+    if (o->parent.type == V_OBJECT && o->parent.object) {
+        return getFirstKey(o->parent.object, value);
     } else {
         assert(false);
     }
@@ -2097,4 +2247,9 @@ LineInfo getLineInfo(Value value) {
     assert(value.type == V_CONS_PAIR);
     assert(value.pair);
     return *value.pair->lineInfo;
+}
+
+bool hasLineInfo(Value value) {
+    return value.type == V_CONS_PAIR && value.pair &&
+        value.pair->lineInfo;
 }

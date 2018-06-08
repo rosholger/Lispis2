@@ -72,20 +72,15 @@
   
 + [ ] Change strings from char * to struct String
 
-+ [-] Objects
++ [X] Objects
 
   + [X] Replace with one built on top of DynamicVector
 
     std::map sucks
 
-  + [ ] Parent
+  + [X] Parent
     
-  + [ ] Remove slot
-    
-    Needs care about removing objects that are present in parent.
-
-    Maybe just make remove be set with undef? atleast if the key exists
-    in the parent...
+  + [X] Remove slot
 
   + [ ] Array part?
 
@@ -124,6 +119,8 @@
   Lua style upvalues will be used.
   + [X] WORKS!!!!
   + [ ] Make a CLOSE op, like lua
+    
+    Boring, but needed.
 
 + [X] for, maybe as iterators?
 
@@ -154,7 +151,7 @@
   #+END_SRC
   
   Would be illegal, bc a would be a local variable without a value...
-  I totally see why they chose the path they did with let.
+  I totally see why they chose the path they did with let now...
   
 + [ ] (if false 'blah) return garbage (should prob. be undef)
 
@@ -186,18 +183,6 @@
 
   (stack-depth) should return 2, not 3
   
-+ [ ] Make C functions get their arguments in logical order
-
-  This can be quite simple if we make register allocation
-  for arglists start at the right hand instead of the left hand.
-  That is if we have (a b . c) the c becomes r0, b r1 and a r2.
-  We can still evaluation arguments left to right bc register machine.
-  The only thing that gets kind of complicated is setting the arguments
-  of lispis functions called from C.
-  But the way it is now is broken anyway bc calling a
-  lispis function with the arguments from a lispis functions
-  puts them in reverse.
-  
 + [ ] Add to FunctionProto (or Function) if its a macro or not.
   And add that info to stack-info.
 
@@ -207,10 +192,49 @@
 + [ ] Somehow make null have a lineinfo when parsing.
   We get garbage asserts on code like ().
   
-+ [ ] Make typedef CFunction return LispisReturnStatus instead of just
++ [X] Make typedef CFunction return LispisReturnStatus instead of just
   asserting
   
 + [X] Calling do-file from lispis
   
-+ [ ] Make do-file a macro? Would make macros defined in the loaded file
++ [X] Make do-file a macro? Would make macros defined in the loaded file
   work.
+  
+  do-file is now a macro, but making it a macro means it cant use things
+  defined in the file it is used from. And its not a call so it should
+  prob. not be called "do"-file, more like include-file.
+  
+  The only true solution to the problem is to make the language execute
+  each top level expression before compiling the next top level
+  expression. After compiling each top-level expression we temporarily
+  insert a a return and run the newly compiled code. The problem with this
+  is that the act of compiling a file/string would also run the top-level.
+  This might be good though.
+  
+  The problem with this is go, the solution would be to, like CL,
+  only allow (go label) inside tagbody. Since then we can always do
+  patchGoStatements after each top-level expression and they should all
+  succede.
+
++ [X] Make call work with C++ functions
+  
++ [ ] Packages?
+
+  Maybe make files into "packages". A package would be an object and a
+  top-level function. Functions would need a reference to the package
+  they are located in. And the parent of the package object would be 
+  the globals? define would bind at package level. Prob. needs a
+  defglobal too.
+  
++ [ ] Create a format for compiled files
+
+  Maybe serialize the AST? Or just dump the arena into a file?
+  
++ [ ] Create go-scope and make it so that go and label can only appear
+  inside a go-scope
+  
++ [ ] We get garbage lineinfo in files "opened" from lispis using do-file
+  
++ [-] Macros and lineInfo
+  
+  Works most of the time now

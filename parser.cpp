@@ -205,7 +205,8 @@ Token nextToken(VM *vm, LexState *state) {
     return ret;
 }
 
-LispisReturnStatus initLexerState(VM *vm, char *prog, LexState *ret) {
+LispisReturnStatus initLexerState(VM *vm, const char *prog,
+                                  LexState *ret) {
     *ret = LexState{};
     ret->prog = prog;
     nextToken(vm, ret);
